@@ -1,0 +1,28 @@
+{
+ "core": [
+  "00-util.js",
+  "10-inflate.js",
+  "12-encode.js",
+  "13-lzma.js",
+  "14-qr.js",
+  "15-bar.js",
+  "20-png.js",
+  "30-jpeg.js",
+  "40-bmp.js",
+  "50-formats.js",
+  "52-carrier.js",
+  "53-pdf.js",
+  "55-archives.js",
+  "60-scan.js",
+  "61-drawn.js",
+  "62-audio.js",
+  "64-pcap.js",
+  "65-diff.js",
+  "66-spectrum.js",
+  "70-analyze.js",
+  "75-companion.js",
+  "76-changelog.js",
+  "78-nodes.js"
+ ],
+ "version": "1.0.0"
+}
