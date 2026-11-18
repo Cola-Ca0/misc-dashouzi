@@ -190,6 +190,7 @@
       case 'TAR': return MDZ.auditTAR(bytes, name, opts);
       case 'RAR': return MDZ.auditRAR(bytes, name, opts);
       case '7Z': return MDZ.audit7Z(bytes, name, opts);
+      case 'BZIP2': return MDZ.auditBzip2(bytes, name, opts);
       case 'PCAP': return MDZ.auditPCAP(bytes, name, opts);
       case 'PCAPNG': return MDZ.auditPCAP(bytes, name, opts);
       case 'TTF': case 'OTF': case 'WOFF': case 'WOFF2': return MDZ.auditFont(bytes);
@@ -199,6 +200,13 @@
       case 'TEXT': return auditGeneric(bytes, name);
       default: return auditGeneric(bytes, name);
     }
+  }
+
+  function inflateStream(kind, bytes, offset, cap) {
+    if (kind === 'zlib') return inflateZlib(bytes, offset, cap);
+    if (kind === 'gzip') return inflateGzip(bytes, offset, cap);
+    if (kind === 'bzip2') return MDZ.inflateBzip2(bytes, offset, cap);
+    return { out: null };
   }
 
   function looksLikeImage(bytes) {
@@ -296,7 +304,7 @@
         } else result.dropped = (result.dropped || 0) + 1;
         continue;
       }
-      if (h.kind !== 'zlib' && h.kind !== 'gzip') continue;
+      if (h.kind !== 'zlib' && h.kind !== 'gzip' && h.kind !== 'bzip2') continue;
       // 去重键必须带文件哈希：不同文件里同偏移的流是两条不同的流
       const key = item.hash + '@' + h.kind + '@' + h.offset;
       if (seenOffsets.has(key)) continue;
@@ -305,14 +313,14 @@
       // 判据要严（魔数必须落在偏移 0）：随机数据的解压结果里「某处出现魔数」每千次就有一次，
       // 放宽会解出一堆几 MB 的垃圾再递归分析，实测 20MB 随机数据因此多花 4 秒。
       const probeCap = 64 * 1024;
-      let z = h.kind === 'zlib' ? inflateZlib(bytes, h.offset, probeCap) : inflateGzip(bytes, h.offset, probeCap);
+      let z = inflateStream(h.kind, bytes, h.offset, probeCap);
       if (z.out && z.out.length >= probeCap) {
         const ph = z.out.subarray(0, Math.min(4096, z.out.length));
         const pFlag = MDZ.FLAG_RE.test(ascii(ph, ph.length));
         // 纯文本阈值取 0.9：随机数据的假流也常能解出 0.82–0.88 的「像文本」碎片，
         // 按 0.8 判会让每个几 MB 的垃圾流都完整解一遍（实测 20MB 随机数据多花 1.4 秒）。
         if (pFlag || startsWithMagic(z.out) || looksLikeImage(z.out) || MDZ.printableRatio(ph) >= 0.9) {
-          z = h.kind === 'zlib' ? inflateZlib(bytes, h.offset, maxOut) : inflateGzip(bytes, h.offset, maxOut);
+          z = inflateStream(h.kind, bytes, h.offset, maxOut);
         }
       }
       if (!z.out || !z.out.length) continue;   // 校验失败也留明文：CRC 被改/截断的流里往往就是 flag

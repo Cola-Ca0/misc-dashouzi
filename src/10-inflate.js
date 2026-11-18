@@ -220,6 +220,225 @@
     }
   }
 
+  // ---------- bzip2 ----------
+  // 浏览器没有内建 bzip2，而 tar.bz2 / binwalk 切出来的 BZh 流在 misc 里太常见。
+  const BZ2_CRC = (() => {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i << 24;
+      for (let k = 0; k < 8; k++) c = (c & 0x80000000) ? ((c << 1) ^ 0x04C11DB7) : (c << 1);
+      t[i] = c >>> 0;
+    }
+    return t;
+  })();
+  function bz2CrcUpdate(crc, byte) {
+    return (((crc << 8) ^ BZ2_CRC[((crc >>> 24) ^ byte) & 255]) >>> 0);
+  }
+
+  // bzip2 是 MSB-first 位流
+  function msbReader(b, pos) {
+    let bp = pos, off = 0;
+    return {
+      bits(n) {
+        let v = 0;
+        for (let i = 0; i < n; i++) {
+          if (bp >= b.length) throw new Error('bzip2 数据提前结束');
+          v = v * 2 + ((b[bp] >> (7 - off)) & 1);
+          if (++off === 8) { off = 0; bp++; }
+        }
+        return v;
+      },
+      consumed() { return bp + (off ? 1 : 0); }
+    };
+  }
+
+  function bz2Huff(lens) {
+    const n = lens.length;
+    let maxLen = 0;
+    for (let i = 0; i < n; i++) if (lens[i] > maxLen) maxLen = lens[i];
+    const count = new Array(maxLen + 1).fill(0);
+    for (let i = 0; i < n; i++) count[lens[i]]++;
+    const next = new Array(maxLen + 1).fill(0);
+    let code = 0;
+    for (let len = 1; len <= maxLen; len++) {
+      code = (code + count[len - 1]) * 2;
+      next[len] = code;
+    }
+    const map = new Map();
+    for (let s = 0; s < n; s++) {
+      const l = lens[s];
+      if (!l) continue;
+      map.set(l * 0x10000 + next[l], s);
+      next[l]++;
+    }
+    return {
+      decode(br) {
+        let c = 0;
+        for (let len = 1; len <= maxLen; len++) {
+          c = c * 2 + br.bits(1);
+          const s = map.get(len * 0x10000 + c);
+          if (s !== undefined) return s;
+        }
+        throw new Error('bzip2 Huffman 码非法');
+      }
+    };
+  }
+
+  function inflateBzip2(input, start, maxOut) {
+    const src = toU8(input);
+    const p = start || 0;
+    if (src[p] !== 0x42 || src[p + 1] !== 0x5A || src[p + 2] !== 0x68) return { out: null, error: '不是 bzip2', consumed: 0 };
+    const level = src[p + 3] - 48;
+    if (level < 1 || level > 9) return { out: null, error: 'bzip2 块大小非法', consumed: 0 };
+    const cap = maxOut || (64 * 1024 * 1024);
+    const br = msbReader(src, p + 4);
+    const chunks = [];
+    let total = 0, blocks = 0, crcOk = true, streamCrc = 0;
+    try {
+      for (;;) {
+        const hi = br.bits(24), lo = br.bits(24);
+        if (hi === 0x177245 && lo === 0x385090) { br.bits(32); break; }   // EOS + 流 CRC
+        if (hi !== 0x314159 || lo !== 0x265359) throw new Error('bzip2 块魔数错误');
+        const blockCrc = br.bits(32);
+        if (br.bits(1)) throw new Error('bzip2 随机化块不支持');
+        const origPtr = br.bits(24);
+
+        const used16 = br.bits(16);
+        const used = new Uint8Array(256);
+        const seqToUnseq = [];
+        for (let i = 0; i < 16; i++) {
+          if (!(used16 & (1 << (15 - i)))) continue;
+          const bits = br.bits(16);
+          for (let j = 0; j < 16; j++) if (bits & (1 << (15 - j))) seqToUnseq.push(i * 16 + j);
+        }
+        if (!seqToUnseq.length) throw new Error('bzip2 空字符表');
+        const nInUse = seqToUnseq.length;
+        const alphaSize = nInUse + 2;
+
+        const nGroups = br.bits(3);
+        if (nGroups < 2 || nGroups > 6) throw new Error('bzip2 组数非法');
+        const nSelectors = br.bits(15);
+        if (nSelectors < 1 || nSelectors > 32768) throw new Error('bzip2 选择器数量非法');
+        const selMtf = [];
+        for (let i = 0; i < nGroups; i++) selMtf.push(i);
+        const selectors = new Uint8Array(nSelectors);
+        for (let i = 0; i < nSelectors; i++) {
+          let j = 0;
+          while (br.bits(1) === 1) { if (++j >= nGroups) throw new Error('bzip2 选择器越界'); }
+          const v = selMtf[j];
+          selMtf.splice(j, 1); selMtf.unshift(v);
+          selectors[i] = v;
+        }
+        const tables = [];
+        for (let g = 0; g < nGroups; g++) {
+          let curr = br.bits(5);
+          const lens = new Uint8Array(alphaSize);
+          for (let s = 0; s < alphaSize; s++) {
+            for (;;) {
+              if (!br.bits(1)) break;
+              if (br.bits(1)) curr--; else curr++;
+              if (curr < 1 || curr > 20) throw new Error('bzip2 码长越界');
+            }
+            lens[s] = curr;
+          }
+          tables.push(bz2Huff(lens));
+        }
+
+        // MTF + RUNA/RUNB
+        const mtf = new Uint8Array(alphaSize);
+        for (let i = 0; i < alphaSize; i++) mtf[i] = i;
+        const maxBlock = level * 100000;
+        const ll8 = new Uint8Array(maxBlock);
+        let nblock = 0;
+        let groupNo = -1, groupPos = 0;
+        const nextSym = () => {
+          if (groupPos === 0) { groupNo++; groupPos = 50; }
+          groupPos--;
+          if (groupNo >= nSelectors) throw new Error('bzip2 选择器用尽');
+          return tables[selectors[groupNo]].decode(br);
+        };
+        const EOB = alphaSize - 1;
+        let sym = nextSym();
+        while (sym !== EOB) {
+          if (sym === 0 || sym === 1) {
+            let es = -1, N = 1;
+            do {
+              if (N >= 2 * 1024 * 1024) throw new Error('bzip2 游程溢出');
+              es += (sym === 0 ? 1 : 2) * N;
+              N *= 2;
+              sym = nextSym();
+            } while (sym === 0 || sym === 1);
+            if (es >= 256) throw new Error('bzip2 游程过长');
+            const uc = seqToUnseq[mtf[0]];
+            for (let k = 0; k <= es; k++) {
+              if (nblock >= ll8.length) throw new Error('bzip2 块超长');
+              ll8[nblock++] = uc;
+            }
+            continue;   // sym 已经是下一个符号
+          }
+          // MTF 第 0 位永远只用 RUNA/RUNB 游程表示，不会被直接编码，所以这里是 -1 不是 -2
+          const idx = sym - 1;
+          if (idx < 0 || idx >= nInUse) throw new Error('bzip2 MTF 越界');
+          const v = mtf[idx];
+          for (let k = idx; k > 0; k--) mtf[k] = mtf[k - 1];
+          mtf[0] = v;
+          if (nblock >= ll8.length) throw new Error('bzip2 块超长');
+          ll8[nblock++] = seqToUnseq[v];
+          sym = nextSym();
+        }
+
+        // 逆 BWT
+        const counts = new Uint32Array(257);
+        for (let i = 0; i < nblock; i++) counts[ll8[i]]++;
+        let sum = 0;
+        const cftab = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) { cftab[i] = sum; sum += counts[i]; }
+        const tt = new Uint32Array(nblock);
+        for (let i = 0; i < nblock; i++) tt[cftab[ll8[i]]++] = i;
+        const bwt = new Uint8Array(nblock);
+        let tPos = tt[origPtr] || 0;
+        for (let i = 0; i < nblock; i++) { bwt[i] = ll8[tPos]; tPos = tt[tPos]; }
+
+        // RLE1：4 个相同字节后跟一个计数
+        let cur = new Uint8Array(65536), cl = 0, crc = 0xFFFFFFFF;
+        const put = (v) => {
+          if (cl === cur.length) { chunks.push(cur); total += cl; cur = new Uint8Array(65536); cl = 0; }
+          cur[cl++] = v;
+          crc = bz2CrcUpdate(crc, v);
+        };
+        for (let i = 0; i < nblock && total + cl < cap; ) {
+          const b = bwt[i++];
+          let run = 1;
+          while (run < 4 && i < nblock && bwt[i] === b) { i++; run++; }
+          if (run === 4) {
+            const extra = i < nblock ? bwt[i++] : 0;
+            for (let k = 0; k < 4 + extra; k++) put(b);
+          } else {
+            for (let k = 0; k < run; k++) put(b);
+          }
+        }
+        if (cl) { chunks.push(cur.subarray(0, cl)); total += cl; }
+        if (((crc ^ 0xFFFFFFFF) >>> 0) !== (blockCrc >>> 0)) crcOk = false;
+        streamCrc = (((streamCrc << 1) | (streamCrc >>> 31)) ^ blockCrc) >>> 0;
+        blocks++;
+        if (total >= cap) return { out: concatChunks(chunks, total), error: 'bzip2 输出超过上限', consumed: br.consumed(), blocks, crcOk };
+      }
+      return { out: concatChunks(chunks, total), error: null, consumed: br.consumed(), blocks, crcOk };
+    } catch (e) {
+      const out = concatChunks(chunks, total);
+      return { out: out.length ? out : null, error: String(e && e.message || e), consumed: br.consumed(), blocks, crcOk, partial: !!out.length };
+    }
+  }
+
+  function concatChunks(chunks, total) {
+    let n = 0;
+    for (const c of chunks) n += c.length;
+    const out = new Uint8Array(n);
+    let o = 0;
+    for (const c of chunks) { out.set(c, o); o += c.length; }
+    return out;
+  }
+
   // ---------- zlib ----------
   function isZlibHeader(src, at) {
     if (at + 2 > src.length) return false;
@@ -316,6 +535,8 @@
       // JPEG 的 SOI 后面必须紧跟一个合法的段标记（0xC0–0xFE，且不是 0xFF）
       else if (b[i] === 0xFF && b[i + 1] === 0xD8 && b[i + 2] === 0xFF && b[i + 3] >= 0xC0 && b[i + 3] !== 0xFF) hits.push({ kind: 'jpeg', offset: i });
       else if (isLzmaAlone(b, i)) hits.push({ kind: 'lzma', offset: i });
+      // bzip2：BZh + 块大小数字。随机数据里 BZh 后面跟 1-9 的概率极低
+      else if (b[i] === 0x42 && b[i + 1] === 0x5A && b[i + 2] === 0x68 && b[i + 3] >= 0x31 && b[i + 3] <= 0x39) hits.push({ kind: 'bzip2', offset: i });
     }
     return hits;
   }
@@ -370,7 +591,7 @@
   }
 
   Object.assign(MDZ, {
-    crc32, adler32, inflateRaw, inflateZlib, inflateGzip,
+    crc32, adler32, inflateRaw, inflateZlib, inflateGzip, inflateBzip2,
     isZlibHeader, isLzmaAlone, findStreamSignatures, crc32Brute
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -598,6 +598,16 @@ def _zip_add(z, name, data, method):
     z.writestr(zi, data)
 
 
+def fixture_bzip2():
+    import bz2
+    return bz2.compress(b"flag{bzip2_layers} " + b"padding " * 64, 9)
+
+
+def fixture_bzip2_two():
+    import bz2
+    return bz2.compress(b"flag{first_bz2}", 9) + bz2.compress(b"flag{second_bz2}", 9)
+
+
 def fixture_zip_plain():
     import zipfile
     buf = io.BytesIO()
@@ -1190,6 +1200,8 @@ FIXTURES = [
     ("gif_lzw.gif", fixture_gif_lzw, ["第 1 帧可解码", "flag{gif_lzw}"]),
     ("gif_interlaced.gif", fixture_gif_interlaced, ["隔行", "flag{gif_interlace}"]),
     ("zip_plain.zip", fixture_zip_plain, ["ZIP 条目", "flag{zip_entry}"]),
+    ("bzip2_text.bz2", fixture_bzip2, ["bzip2 解压", "flag{bzip2_layers}"]),
+    ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("palette.png", fixture_palette_png, []),
     ("plte_unused.png", fixture_plte_unused, ["未使用颜色", "flag{plte_unused}"]),
     ("apng_lsb.png", fixture_apng_lsb, ["APNG 动画", "flag{apng_lsb}"]),

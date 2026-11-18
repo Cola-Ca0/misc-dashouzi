@@ -363,5 +363,29 @@
     return { findings, artifacts, image: null, parsed: { names, encoded } };
   }
 
-  Object.assign(MDZ, { isTAR, auditTAR, isRAR, auditRAR, is7Z, audit7Z, tarNum, tarChecksumOk });
+  // ---------- bzip2 ----------
+  function auditBzip2(input, name) {
+    const b = toU8(input);
+    const z = MDZ.inflateBzip2(b, 0, 64 * 1024 * 1024);
+    const findings = [], artifacts = [];
+    if (!z.out || !z.out.length) {
+      findings.push(finding('L0', 'bzip2', 'bzip2 解压失败', {
+        confidence: 0.9, detail: z.error || '没有产出'
+      }));
+      return { findings, artifacts, image: null, parsed: z };
+    }
+    const out = z.out;
+    findings.push(finding('L1', 'bzip2', `bzip2 解压（${z.blocks} 块，${out.length} 字节）`, {
+      confidence: 0.85,
+      declared: `块大小 ${b[3] - 48}00k`,
+      actual: `${out.length} 字节`,
+      detail: (z.crcOk ? '块 CRC 校验通过。' : '块 CRC 不匹配：数据可能被改过。')
+        + (z.error ? ' 解码在中途停止：' + z.error : ''),
+      preview: ascii(out, 120)
+    }));
+    artifacts.push(artifact('bzip2-out.bin', out, 'bzip2 解压产物' + (z.error ? ' · 部分' : '')));
+    return { findings, artifacts, image: null, parsed: z };
+  }
+
+  Object.assign(MDZ, { isTAR, auditTAR, isRAR, auditRAR, is7Z, audit7Z, auditBzip2, tarNum, tarChecksumOk });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -1238,5 +1238,19 @@ console.log('\n== 产物另存名 ==');
   check('未知格式不另给', M.alternateName('a.bin', Buffer.from([1, 2, 3, 4, 5, 6])) === '',
     M.alternateName('a.bin', Buffer.from([1, 2, 3, 4, 5, 6])));
 }
+console.log('\n== bzip2 ==');
+{
+  const f = fs.readFileSync(path.join(__dirname, 'fixtures', 'bzip2_text.bz2'));
+  check('bzip2 类型识别', M.detectType(f, 'x.bz2').format === 'BZIP2', M.detectType(f, 'x.bz2').format);
+  const z = M.inflateBzip2(f, 0, 1 << 20);
+  check('bzip2 解压正确', !z.error && z.crcOk && !!z.out && Buffer.from(z.out).toString('latin1').indexOf('flag{bzip2_layers}') >= 0,
+    z.error || ('crc=' + z.crcOk));
+  const two = fs.readFileSync(path.join(__dirname, 'fixtures', 'bzip2_two_streams.bz2'));
+  const r2 = M.analyze(two, 'two.bz2', {});
+  check('bzip2 双流都能解出', findingText(r2).indexOf('flag{second_bz2}') >= 0, findingText(r2).slice(0, 240));
+  const cut = f.subarray(0, Math.floor(f.length / 2));
+  const zc = M.inflateBzip2(cut, 0, 1 << 20);
+  check('bzip2 截断必须报错', !!zc.error || !zc.crcOk, zc.error || 'crc ok');
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }

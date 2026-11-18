@@ -227,7 +227,16 @@
     { name: 'SQLITE', mime: 'application/vnd.sqlite3', sig: [0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00] },
     { name: 'ELF', mime: 'application/x-elf', sig: [0x7f, 0x45, 0x4c, 0x46] },
     { name: 'PE', mime: 'application/vnd.microsoft.portable-executable', sig: [0x4d, 0x5a] },
-    { name: 'XZ', mime: 'application/x-xz', sig: [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00] }
+    { name: 'XZ', mime: 'application/x-xz', sig: [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00] },
+    { name: 'ZSTD', mime: 'application/zstd', sig: [0x28, 0xb5, 0x2f, 0xfd] },
+    { name: 'PSD', mime: 'image/vnd.adobe.photoshop', sig: [0x38, 0x42, 0x50, 0x53] },
+    { name: 'OLE', mime: 'application/x-ole-storage', sig: [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] },
+    { name: 'FLAC', mime: 'audio/flac', sig: [0x66, 0x4c, 0x61, 0x43] },
+    { name: 'MACHO', mime: 'application/x-mach-binary', sig: [0xfe, 0xed, 0xfa, 0xce] },
+    { name: 'MACHO', mime: 'application/x-mach-binary', sig: [0xfe, 0xed, 0xfa, 0xcf] },
+    { name: 'MACHO', mime: 'application/x-mach-binary', sig: [0xce, 0xfa, 0xed, 0xfe] },
+    { name: 'MACHO', mime: 'application/x-mach-binary', sig: [0xcf, 0xfa, 0xed, 0xfe] },
+    { name: 'PCX', mime: 'image/x-pcx', sig: [0x0a, 0x05, 0x01] }
   ];
 
   function startsWith(bytes, sig) {
@@ -262,6 +271,30 @@
     return false;
   }
 
+  // TGA 没有魔数，只能靠 18 字节头自洽 + 可选 footer 判定
+  function looksLikeTGA(b) {
+    if (b.length < 18) return false;
+    const idLen = b[0], cmap = b[1], type = b[2];
+    if (cmap > 1) return false;
+    if (type !== 1 && type !== 2 && type !== 3 && type !== 9 && type !== 10 && type !== 11) return false;
+    const w = b[12] | (b[13] << 8), h = b[14] | (b[15] << 8);
+    if (!w || !h) return false;
+    const bpp = b[16], pix = b[17];
+    if (bpp !== 8 && bpp !== 15 && bpp !== 16 && bpp !== 24 && bpp !== 32) return false;
+    if (pix !== 8 && pix !== 16 && pix !== 24 && pix !== 32) return false;
+    if (idLen && 18 + idLen > b.length) return false;
+    if (b.length >= 26) {
+      const tail = ascii(b.subarray(b.length - 18, b.length), 18);
+      if (tail.indexOf('TRUEVISION-XFILE') === 0) return true;
+    }
+    if (type === 2 || type === 3) {
+      const off = 18 + idLen + (cmap === 1 ? (b[5] | (b[6] << 8)) * Math.ceil(b[7] / 8) : 0);
+      const need = w * h * Math.ceil(pix / 8);
+      return b.length >= off + need - 16 && b.length <= off + need + 4096;
+    }
+    return false;
+  }
+
   function detectType(input, name) {
     const b = toU8(input);
     let format = 'unknown', mime = 'application/octet-stream', label = '未知';
@@ -280,6 +313,32 @@
     if (format === 'unknown' && b.length >= 512 && ascii(b.subarray(257, 262), 5) === 'ustar') {
       format = 'TAR'; mime = 'application/x-tar'; label = 'TAR';
     }
+    // bzip2 的 'BZh' 后面必须跟着块大小数字 1-9
+    if (format === 'unknown' && b.length >= 4 && b[0] === 0x42 && b[1] === 0x5A && b[2] === 0x68 && b[3] >= 0x31 && b[3] <= 0x39) {
+      format = 'BZIP2'; mime = 'application/x-bzip2'; label = 'BZIP2';
+    }
+    // MP4/MOV：偏移 4 的 box 类型是 'ftyp'
+    if (format === 'unknown' && b.length >= 12 && ascii(b.subarray(4, 8), 4) === 'ftyp') {
+      format = 'MP4'; mime = 'video/mp4'; label = 'MP4';
+    }
+    // ISO9660：主卷描述符在扇区 16
+    if (format === 'unknown' && b.length >= 0x8006 && ascii(b.subarray(0x8001, 0x8006), 5) === 'CD001') {
+      format = 'ISO'; mime = 'application/x-iso9660-image'; label = 'ISO9660';
+    }
+    // Windows 快捷方式：偏移 4 的 LinkCLSID
+    if (format === 'unknown' && b.length >= 20 && b[0] === 0x4C && b[4] === 0x01 && b[5] === 0x14 && b[6] === 0x02 &&
+      b[7] === 0 && b[8] === 0 && b[9] === 0 && b[10] === 0 && b[11] === 0 && b[12] === 0xC0 && b[13] === 0 &&
+      b[14] === 0 && b[15] === 0 && b[16] === 0 && b[17] === 0 && b[18] === 0 && b[19] === 0x46) {
+      format = 'LNK'; mime = 'application/x-ms-shortcut'; label = 'LNK';
+    }
+    // CAFEBABE：Java class 与 Mach-O fat 共用，用后续版本号区分
+    if (format === 'unknown' && b.length >= 8 && b[0] === 0xCA && b[1] === 0xFE && b[2] === 0xBA && b[3] === 0xBE) {
+      const major = (b[6] << 8) | b[7];
+      const nfat = ((b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7]) >>> 0;
+      if (major >= 45 && major <= 80) { format = 'JAVA'; mime = 'application/java-vm'; label = 'Java class'; }
+      else if (nfat >= 1 && nfat <= 64) { format = 'MACHO'; mime = 'application/x-mach-binary'; label = 'Mach-O fat'; }
+    }
+    if (format === 'unknown' && looksLikeTGA(b)) { format = 'TGA'; mime = 'image/x-tga'; label = 'TGA'; }
     // MP3 帧同步（无 ID3 头）
     if (format === 'unknown' && b.length >= 2 && b[0] === 0xff && (b[1] & 0xe0) === 0xe0) {
       format = 'MP3'; mime = 'audio/mpeg'; label = 'MP3';
@@ -308,7 +367,9 @@
       tif: 'TIFF', tiff: 'TIFF', webp: 'WEBP', svg: 'SVG', zip: 'ZIP', rar: 'RAR',
       '7z': '7Z', gz: 'GZIP', pdf: 'PDF', txt: 'TEXT', bpg: 'BPG',
       wav: 'WAV', mp3: 'MP3', pcap: 'PCAP', pcapng: 'PCAPNG', cap: 'PCAP',
-      tar: 'TAR', rar: 'RAR', '7z': '7Z'
+      tar: 'TAR', rar: 'RAR', '7z': '7Z',
+      bz2: 'BZIP2', tga: 'TGA', psd: 'PSD', doc: 'OLE', xls: 'OLE', ppt: 'OLE', msi: 'OLE',
+      flac: 'FLAC', zst: 'ZSTD', lnk: 'LNK', mp4: 'MP4', mov: 'MP4', iso: 'ISO', class: 'JAVA', pcx: 'PCX'
     };
     const byExt = extMap[ext];
     return {
@@ -324,7 +385,9 @@
   const FORMAT_EXT = {
     PNG: 'png', JPEG: 'jpg', GIF: 'gif', BMP: 'bmp', ICO: 'ico', TIFF: 'tif', WEBP: 'webp', SVG: 'svg',
     ZIP: 'zip', RAR: 'rar', '7Z': '7z', GZIP: 'gz', PDF: 'pdf', WAV: 'wav', MP3: 'mp3',
-    PCAP: 'pcap', PCAPNG: 'pcapng', TAR: 'tar', BPG: 'bpg', TEXT: 'txt'
+    PCAP: 'pcap', PCAPNG: 'pcapng', TAR: 'tar', BPG: 'bpg', TEXT: 'txt',
+    BZIP2: 'bz2', ZSTD: 'zst', PSD: 'psd', OLE: 'doc', FLAC: 'flac',
+    LNK: 'lnk', MP4: 'mp4', ISO: 'iso', JAVA: 'class', TGA: 'tga', MACHO: 'macho', PCX: 'pcx'
   };
   function alternateName(name, bytes) {
     if (!bytes || !bytes.length) return '';
