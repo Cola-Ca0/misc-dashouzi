@@ -1121,5 +1121,85 @@ console.log('\n== 模板随任务固化 ==');
   check('默认模板认出 ZIP 注释 flag', M.flags(a).indexOf('flag{zip_comment}') >= 0, JSON.stringify(M.flags(a)));
   check('自定义模板不误认 flag{}', M.flags(b).indexOf('flag{zip_comment}') < 0, JSON.stringify(M.flags(b)));
 }
+console.log('\n== ZIP 边界与 ZIP64 ==');
+{
+  const cat = (...p) => Buffer.concat(p);
+  const U16 = n => { const b = Buffer.alloc(2); b.writeUInt16LE(n & 0xFFFF); return b; };
+  const U32 = n => { const b = Buffer.alloc(4); b.writeUInt32LE(n >>> 0); return b; };
+  const U64 = n => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
+
+  // 自己造 ZIP，测试才是自证的：想改哪个字段就改哪个
+  function buildZip(specs, opts) {
+    const locals = [], cds = [];
+    let off = 0;
+    for (const s of specs) {
+      const name = Buffer.from(s.name || 'a.txt', 'latin1');
+      const data = s.data || Buffer.alloc(0);
+      const crc = M.crc32(data) >>> 0;
+      const local = cat(Buffer.from([0x50, 0x4B, 3, 4]), U16(20), U16(0), U16(s.method || 0), U16(0), U16(0),
+        U32(s.localCrc != null ? s.localCrc : crc),
+        U32(s.localCsize != null ? s.localCsize : data.length),
+        U32(s.localUsize != null ? s.localUsize : data.length),
+        U16(name.length), U16(0), name);
+      const c = s.cd || {};
+      const extra = c.extra || Buffer.alloc(0);
+      cds.push(cat(Buffer.from([0x50, 0x4B, 1, 2]), U16(20), U16(20), U16(0), U16(s.method || 0), U16(0), U16(0),
+        U32(s.cdCrc != null ? s.cdCrc : (s.localCrc != null ? s.localCrc : crc)),
+        U32(c.csize != null ? c.csize : data.length),
+        U32(c.usize != null ? c.usize : data.length),
+        U16(name.length), U16(extra.length), U16(0), U16(0), U16(0), U32(0),
+        U32(c.offset != null ? c.offset : off), name, extra));
+      locals.push(local, data);
+      off += local.length + data.length;
+    }
+    const body = cat(...locals);
+    const cd = cat(...cds);
+    if (opts && opts.zip64) {
+      const recOff = body.length + cd.length;
+      const rec = cat(Buffer.from([0x50, 0x4B, 6, 6]), U64(44), U16(45), U16(45), U32(0), U32(0),
+        U64(specs.length), U64(specs.length), U64(cd.length), U64(body.length));
+      const loc = cat(Buffer.from([0x50, 0x4B, 6, 7]), U32(0), U64(recOff), U32(1));
+      const eocd64 = cat(Buffer.from([0x50, 0x4B, 5, 6]), U16(0), U16(0), U16(0xFFFF), U16(0xFFFF), U32(0xFFFFFFFF), U32(0xFFFFFFFF), U16(0));
+      return cat(body, cd, rec, loc, eocd64);
+    }
+    const eocd = cat(Buffer.from([0x50, 0x4B, 5, 6]), U16(0), U16(0), U16(specs.length), U16(specs.length), U32(cd.length), U32(body.length), U16(0));
+    return cat(body, cd, eocd);
+  }
+
+  const payload = Buffer.from('flag!', 'latin1');
+
+  // ZIP64 中央目录：32 位字段全是哨兵，真值在 0x0001 扩展里（顺序 usize → csize → offset）
+  const z64extra = cat(U16(1), U16(24), U64(payload.length), U64(payload.length), U64(0));
+  const z64 = buildZip([{ name: 'a.txt', data: payload, cd: { csize: 0xFFFFFFFF, usize: 0xFFFFFFFF, offset: 0xFFFFFFFF, extra: z64extra } }]);
+  const p64 = M.parseZIP(z64);
+  check('ZIP64 0x0001 尺寸被解析', p64.entries.length === 1 && p64.entries[0].csize === 5 && p64.entries[0].usize === 5 && p64.entries[0].dataStart >= 0,
+    JSON.stringify(p64.entries.map(e => ({ c: e.csize, u: e.usize, d: e.dataStart }))));
+  const a64 = M.auditZIP(z64, 'z64.zip');
+  check('ZIP64 stored 产物等于声明长度', a64.artifacts.some(a => a.bytes && a.bytes.length === 5),
+    JSON.stringify(a64.artifacts.map(a => a.bytes && a.bytes.length)));
+
+  // ZIP64 EOCD：EOCD 里的 count/offset 是哨兵，真值在 ZIP64 EOCD 记录里
+  const zeocd = buildZip([{ name: 'a.txt', data: payload }], { zip64: true });
+  const peocd = M.parseZIP(zeocd);
+  check('ZIP64 EOCD 被解析', peocd.entries.length === 1 && peocd.eocd && peocd.eocd.count === 1,
+    JSON.stringify({ n: peocd.entries.length, e: peocd.eocd && peocd.eocd.count }));
+
+  // 截断的 stored 条目：声明 100 字节，实际只有 5 字节
+  const trunc = buildZip([{ name: 't.txt', data: payload, cd: { csize: 100, usize: 100 } }]);
+  const at = M.auditZIP(trunc, 'trunc.zip');
+  check('截断条目标注部分恢复', at.artifacts.some(a => a.bytes && /部分/.test(a.note)) && at.findings.some(f => /截断/.test(f.title + (f.detail || '') + (f.actual || ''))),
+    JSON.stringify({ notes: at.artifacts.map(a => a.note), titles: at.findings.map(f => f.title) }));
+
+  // 损坏的 deflate 条目：必须报解码失败，不能标成「已解压」
+  const badDeflate = buildZip([{ name: 'b.bin', method: 8, data: Buffer.alloc(40, 0xAA), localCrc: 0, cdCrc: 0 }]);
+  const ab = M.auditZIP(badDeflate, 'bad.zip');
+  check('损坏 deflate 必须报错', ab.findings.some(f => /deflate|解压|EOF|unexpected/i.test(f.title + ' ' + (f.detail || ''))),
+    JSON.stringify(ab.findings.map(f => f.title)));
+
+  // stored 条目 CRC 不符
+  const wrongCrc = buildZip([{ name: 'c.txt', data: payload, cdCrc: 0x12345678 }]);
+  const ac = M.auditZIP(wrongCrc, 'crc.zip');
+  check('stored CRC 不符被检出', ac.findings.some(f => /CRC/.test(f.title)), JSON.stringify(ac.findings.map(f => f.title)));
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }

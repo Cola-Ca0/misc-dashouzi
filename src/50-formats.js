@@ -8,6 +8,31 @@
 
   function le16(b, o) { return b[o] | (b[o + 1] << 8); }
   function le32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+  // 文件大小远在 2^53 以内，用 double 拼 64 位即可
+  function le64(b, o) { return le32(b, o) + le32(b, o + 4) * 0x100000000; }
+
+  // ZIP64 的 0x0001 扩展字段：只包含那些 32 位字段为 0xFFFFFFFF 的值，顺序固定
+  function zip64Extra(b, start, len) {
+    const end = Math.min(b.length, start + len);
+    let p = start;
+    while (p + 4 <= end) {
+      const id = le16(b, p), sz = le16(b, p + 2);
+      if (p + 4 + sz > end) return null;
+      if (id === 0x0001) return b.subarray(p + 4, p + 4 + sz);
+      p += 4 + sz;
+    }
+    return null;
+  }
+
+  // EOCD 里的 0xFFFF/0xFFFFFFFF 只是哨兵，真值在紧邻的 ZIP64 EOCD 记录里
+  function zip64EOCD(b, eocdPos) {
+    const loc = eocdPos - 20;
+    if (loc < 0 || b[loc] !== 0x50 || b[loc + 1] !== 0x4B || b[loc + 2] !== 0x06 || b[loc + 3] !== 0x07) return null;
+    const off = le64(b, loc + 8);
+    if (off + 56 > b.length) return null;
+    if (b[off] !== 0x50 || b[off + 1] !== 0x4B || b[off + 2] !== 0x06 || b[off + 3] !== 0x06) return null;
+    return { count: le64(b, off + 32), cdSize: le64(b, off + 40), cdOffset: le64(b, off + 48) };
+  }
 
   // ---------- base64 ----------
   const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -656,10 +681,14 @@
     const min = Math.max(0, b.length - 65557);
     for (let i = b.length - 22; i >= min; i--) {
       if (b[i] !== 0x50 || b[i + 1] !== 0x4B || b[i + 2] !== 0x05 || b[i + 3] !== 0x06) continue;
-      const count = le16(b, i + 10);
-      const cdSize = le32(b, i + 12);
-      const cdOffset = le32(b, i + 16);
+      let count = le16(b, i + 10);
+      let cdSize = le32(b, i + 12);
+      let cdOffset = le32(b, i + 16);
       const commentLen = le16(b, i + 20);
+      if (count === 0xFFFF || cdSize === 0xFFFFFFFF || cdOffset === 0xFFFFFFFF) {
+        const z64 = zip64EOCD(b, i);
+        if (z64) { count = z64.count; cdSize = z64.cdSize; cdOffset = z64.cdOffset; }
+      }
       if (cdOffset + cdSize > b.length) continue;
       const comment = commentLen > 0 && i + 22 + commentLen <= b.length
         ? b.subarray(i + 22, i + 22 + commentLen) : null;
@@ -681,12 +710,23 @@
         const flags = le16(b, p + 8);
         const method = le16(b, p + 10);
         const crc = le32(b, p + 16);
-        const csize = le32(b, p + 20);
-        const usize = le32(b, p + 24);
+        let csize = le32(b, p + 20);
+        let usize = le32(b, p + 24);
         const nameLen = le16(b, p + 28);
         const extraLen = le16(b, p + 30);
         const commentLen = le16(b, p + 32);
-        const localOffset = le32(b, p + 42);
+        let localOffset = le32(b, p + 42);
+        // ZIP64：32 位字段是 0xFFFFFFFF 时，真值按 usize → csize → localOffset 的顺序写在 0x0001 扩展里
+        if (csize === 0xFFFFFFFF || usize === 0xFFFFFFFF || localOffset === 0xFFFFFFFF) {
+          const body = zip64Extra(b, p + 46 + nameLen, extraLen);
+          if (body) {
+            let q = 0;
+            const take = () => { if (q + 8 > body.length) return null; const v = le64(body, q); q += 8; return v; };
+            if (usize === 0xFFFFFFFF) { const v = take(); if (v !== null) usize = v; }
+            if (csize === 0xFFFFFFFF) { const v = take(); if (v !== null) csize = v; }
+            if (localOffset === 0xFFFFFFFF) { const v = take(); if (v !== null) localOffset = v; }
+          }
+        }
         const nameB = b.subarray(p + 46, Math.min(b.length, p + 46 + nameLen));
         const name = utf8(nameB) || ascii(nameB, nameB.length);
         let dataStart = -1;
@@ -745,12 +785,31 @@
 
   function unzipEntry(b, e) {
     if (e.dataStart < 0 || e.encrypted) return { data: null, error: null };
+    const declared = e.csize === 0xFFFFFFFF ? null : e.csize;
+    // 声明的条目越过文件尾 = 截断包：能拿多少给多少，但必须标成部分恢复
+    if (declared != null && (e.dataStart > b.length || e.dataStart + declared > b.length)) {
+      const data = e.dataStart < b.length ? b.subarray(e.dataStart, b.length) : null;
+      return {
+        data,
+        error: '条目被截断：声明 ' + declared + ' 字节，实际 ' + Math.max(0, b.length - e.dataStart),
+        partial: true
+      };
+    }
+    const end = declared == null ? b.length : Math.min(b.length, e.dataStart + declared);
     if (e.method === 0) {
-      return { data: b.subarray(e.dataStart, Math.min(b.length, e.dataStart + e.csize)), error: null };
+      const data = b.subarray(e.dataStart, end);
+      const bad = e.crc && MDZ.crc32 && (MDZ.crc32(data) >>> 0) !== (e.crc >>> 0);
+      return { data, error: bad ? 'CRC 不匹配（数据被改过或不是这个条目）' : null, partial: false };
     }
     if (e.method === 8) {
-      const z = MDZ.inflateRaw(b, e.dataStart, 64 * 1024 * 1024);
-      return { data: z.out && z.out.length ? z.out : null, error: z.out ? null : (z.error || 'deflate 解压失败') };
+      // 只把条目自己的字节喂给解压器，别让它读进后面的中央目录
+      const z = MDZ.inflateRaw(b.subarray(e.dataStart, end), 0, 64 * 1024 * 1024);
+      const out = z.out && z.out.length ? z.out : null;
+      let err = z.error || null;
+      if (!err && out && e.crc && MDZ.crc32 && (MDZ.crc32(out) >>> 0) !== (e.crc >>> 0)) {
+        err = 'CRC 不匹配（解压结果与声明不符）';
+      }
+      return { data: out, error: err, partial: !!err };
     }
     if (e.method === 14 && MDZ.lzmaDecompressAlone) {
       // method 14：2 字节版本 + 2 字节 props 长度(=5) + props/dict(5) + 裸 LZMA 数据
@@ -813,13 +872,24 @@
       if (e.encrypted) continue;
       const r = unzipEntry(b, e);
       if (r.data && r.data.length) {
-        artifacts.push(artifact('zip-' + (e.name || 'entry'), r.data, 'ZIP 条目（method ' + e.method + (e.method === 0 ? ' stored' : '，已解压') + '）'));
-      } else if (r.error && e.method !== 0 && e.method !== 8) {
+        artifacts.push(artifact('zip-' + (e.name || 'entry'), r.data,
+          'ZIP 条目（method ' + e.method + (e.method === 0 ? ' stored' : '，已解压') + '）' + (r.partial ? ' · 部分提取' : '')));
+      }
+      if (r.error && e.method !== 0 && e.method !== 8) {
         findings.push(finding('L2', 'zip_method', 'ZIP 条目 ' + e.name + '：' + r.error, {
           confidence: 0.8, offset: e.offset,
           declared: 'method ' + e.method, actual: '未提取',
           detail: '该压缩方法还没实现解压；可以先用 7z / unzip 手工展开。',
           recipe: '7z x <file.zip>'
+        }));
+      } else if (r.error) {
+        // 截断 / CRC 不符：即使已经拿到部分字节，也要明确说是「部分提取」
+        findings.push(finding('L2', 'zip_extract', 'ZIP 条目 ' + (e.name || '(无名)') + '：' + r.error, {
+          confidence: r.partial ? 0.9 : 0.8, offset: e.offset,
+          declared: e.csize === 0xFFFFFFFF ? 'ZIP64 尺寸缺失' : e.csize + ' 字节',
+          actual: r.data ? r.data.length + ' 字节' : '未提取',
+          detail: r.partial ? '后面的字节不属于这个条目，产物只到截断处为止。' : '',
+          recipe: 'unzip -t <file.zip> 核对完整性'
         }));
       }
     }
