@@ -408,9 +408,18 @@
   function analyzeBytes(bytes, name) {
     if (!bytes || !bytes.length) return;
     const b = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const label = name || 'fixed.bin';
+    // 批量进行中：副本作为派生项追加到队尾，原队列和原批量报告都保留
+    if (state.items.length > 1) {
+      const item = { file: { name: label, size: b.length }, derived: true, name: label, bytes: b, result: null, status: '待分析', error: null };
+      state.items.push(item);
+      renderBatch();
+      runDerivedAnalysis(item);
+      return;
+    }
     state.bytes = b;
-    state.file = { name: name || 'fixed.bin' };
-    state.items = [{ file: null, name: name || 'fixed.bin', bytes: b, result: null, status: '待分析', error: null }];
+    state.file = { name: label };
+    state.items = [{ file: null, name: label, bytes: b, result: null, status: '待分析', error: null }];
     state.activeIdx = 0;
     state.busy = false;
     state.layer = 'all';
@@ -420,6 +429,33 @@
       info.innerHTML = `<b>${esc(state.file.name)}</b><br>${fmtSize(b.length)} <span style="color:var(--muted)">（修复副本）</span>`;
     }
     runAnalysis();
+  }
+
+  // 派生项只跑自己，不重跑整个批量；跑完只多一行，不抢走当前查看位置
+  async function runDerivedAnalysis(item) {
+    const my = ++analyzeSeq;
+    const deep = $('#deep').checked;
+    const maxScanPixels = parseInt($('#maxpx').value, 10) || 6000000;
+    item.status = '分析中';
+    renderBatch();
+    setAnalysisRunning(true);
+    try {
+      const r = await analyzeAsync(item.bytes, item.name, { deep, maxScanPixels });
+      if (my !== analyzeSeq) return;
+      item.result = r;
+      item.flagCount = M.flags(r).length;
+      item.status = '完成';
+      renderBatch();
+      setStatus(`修复副本就绪：${esc(item.name)} · ${r.findings.length} 条发现 · ${r.stats.elapsed} ms（点批量列表最后一行查看）`);
+    } catch (e) {
+      if (my !== analyzeSeq) return;
+      item.status = '失败';
+      item.error = String(e && e.message || e);
+      renderBatch();
+      setStatus('<span style="color:var(--danger)">修复副本失败：' + esc(item.error) + '</span>');
+    } finally {
+      if (my === analyzeSeq) setAnalysisRunning(false);
+    }
   }
 
   function runCurrentAnalysis() {
@@ -549,36 +585,66 @@
     setStatus(`批量完成：${done.length} 个文件 · ${total} 条发现 · ${Math.round(now() - t0)} ms` + (failed ? ` · ${failed} 个失败` : ''));
   }
 
+  // 批量列表的 DOM 引用：行数不变时只改文字和 class，不重建节点，
+  // 否则每完成一项都会把滚动位置和键盘焦点一起丢掉。
+  let batchDom = null;
+
   function renderBatch() {
     const box = $('#batch');
     if (!box) return;
-    if (state.items.length < 2) { box.style.display = 'none'; box.innerHTML = ''; return; }
+    if (state.items.length < 2) { box.style.display = 'none'; box.innerHTML = ''; batchDom = null; return; }
     box.style.display = '';
-    const done = state.items.filter(x => x.result).length;
-    const total = state.items.reduce((a, x) => a + (x.result ? x.result.findings.length : 0), 0);
-    const flagCount = state.items.reduce((a, x) => a + (x.flagCount || 0), 0);
-    const rows = state.items.map((it, i) => {
+    if (batchDom && batchDom.rows.length === state.items.length && box.contains(batchDom.list)) {
+      patchBatch();
+      return;
+    }
+    const rows = state.items.map((it, i) => `<button class="batch-row" data-batch="${i}">
+        <span class="bi">${i + 1}</span><span class="bn"></span><span class="bf"></span>
+        <span class="bs"></span><span class="bc"></span><span class="bfl"></span><span class="bst"></span>
+      </button>`).join('');
+    box.innerHTML = `<div class="batch-head"><b>批量</b><span></span></div><div class="batch-list">${rows}</div>`;
+    const list = box.querySelector('.batch-list');
+    batchDom = { box, list, rows: Array.prototype.slice.call(list.children), head: box.querySelector('.batch-head span'), errs: null };
+    batchDom.rows.forEach((el, i) => el.addEventListener('click', () => {
+      if (!el.disabled) activate(i);
+    }));
+    patchBatch();
+  }
+
+  function patchBatch() {
+    const ref = batchDom;
+    let done = 0, total = 0, flagCount = 0;
+    state.items.forEach((it, i) => {
       const r = it.result;
-      const t = r && r.type;
-      const fl = r ? (it.flagCount || 0) : 0;
+      const el = ref.rows[i];
       const bad = it.status === '失败';
-      return `<button class="batch-row${i === state.activeIdx ? ' on' : ''}${r ? ' done' : ''}" data-batch="${i}" ${r ? '' : 'disabled'} title="${esc(it.error || it.name)}">
-        <span class="bi">${i + 1}</span>
-        <span class="bn">${esc(it.name)}</span>
-        <span class="bf">${t ? esc(t.format) : '—'}</span>
-        <span class="bs">${it.bytes ? fmtSize(it.bytes.length) : (it.file && it.file.size ? fmtSize(it.file.size) : '—')}</span>
-        <span class="bc">${r ? r.findings.length : '·'}</span>
-        <span class="bfl">${fl || ''}</span>
-        <span class="bst${bad ? ' bad' : ''}">${esc(bad ? '失败' : it.status)}</span>
-      </button>`;
-    }).join('');
+      if (r) { done++; total += r.findings.length; }
+      flagCount += it.flagCount || 0;
+      el.className = 'batch-row' + (i === state.activeIdx ? ' on' : '') + (r ? ' done' : '');
+      el.disabled = !r;
+      el.title = it.error || it.name;
+      el.children[1].textContent = it.name;
+      el.children[2].textContent = r && r.type ? r.type.format : '—';
+      el.children[3].textContent = it.bytes ? fmtSize(it.bytes.length) : (it.file && it.file.size ? fmtSize(it.file.size) : '—');
+      el.children[4].textContent = r ? r.findings.length : '·';
+      el.children[5].textContent = r && it.flagCount ? it.flagCount : '';
+      el.children[6].textContent = bad ? '失败' : (it.status || '');
+      el.children[6].className = 'bst' + (bad ? ' bad' : '');
+    });
+    ref.head.textContent = `${state.items.length} 个文件 · ${done} 完成 · ${total} 条发现`
+      + (flagCount ? ' · ' + flagCount + ' 个 flag' : '')
+      + (state.ignored ? ` · 已忽略 ${state.ignored} 个（上限 ${MAX_BATCH}）` : '');
     // 失败原因不能只藏在 disabled 按钮的 title 里（鼠标移上去才有，键盘还够不着）
     const errs = state.items.map((it, i) => it.error ? `<div class="batch-err"><b>${i + 1}. ${esc(it.name)}</b>：${esc(it.error)}</div>` : '').join('');
-    box.innerHTML = `<div class="batch-head"><b>批量</b><span>${state.items.length} 个文件 · ${done} 完成 · ${total} 条发现${flagCount ? ' · ' + flagCount + ' 个 flag' : ''}${state.ignored ? ` · 已忽略 ${state.ignored} 个（上限 ${MAX_BATCH}）` : ''}</span></div><div class="batch-list">${rows}</div>${errs ? `<div class="batch-errs">${errs}</div>` : ''}`;
-    $$('[data-batch]', box).forEach(el => el.addEventListener('click', () => {
-      if (el.disabled) return;
-      activate(parseInt(el.dataset.batch, 10));
-    }));
+    if (errs && !ref.errs) {
+      ref.errs = document.createElement('div');
+      ref.errs.className = 'batch-errs';
+      ref.box.appendChild(ref.errs);
+    }
+    if (ref.errs) {
+      if (!errs) { ref.errs.remove(); ref.errs = null; }
+      else if (ref.errs.innerHTML !== errs) ref.errs.innerHTML = errs;
+    }
   }
 
   function activate(i) {
@@ -2545,7 +2611,8 @@
       });
     }
     $('#report').addEventListener('click', () => {
-      const done = state.items.filter(x => x.result);
+      // 修复副本是派生项，只用来查看/导出单份，不进原批量报告
+      const done = state.items.filter(x => x.result && !x.derived);
       const tpl = ($('#report-tpl') || {}).value || 'full';
       if (state.items.length > 1 && done.length) {
         // 批量也要认「报告模板」：选速报就出速报，不能永远吐完整报告

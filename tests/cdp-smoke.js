@@ -627,6 +627,97 @@ function zeroBmp() {
       document.querySelector('#maxpx option[value="1"]').remove(); restoreAnalysisTestWorker();`);
     extra.settings = { batch: settingsJobs.length, single: singleSettings, reports: reportCounts };
 
+    // 把 Worker 的下一项握在测试端，等界面完成切换后再放行。
+    const holdBatchJob = name => ev(`(() => {
+      const post = Worker.prototype.postMessage;
+      delete window.releaseBatchJob;
+      Worker.prototype.postMessage = function (job, ...args) {
+        if (job.name !== ${JSON.stringify(name)}) return post.call(this, job, ...args);
+        Worker.prototype.postMessage = post;
+        window.releaseBatchJob = () => post.call(this, job, ...args);
+      };
+    })()`);
+
+    const repairFiles = ['bad_crc_height.png', 'deep_lsb.png'].map(f => path.join(ROOT, 'tests', 'fixtures', f));
+    await ev(`document.querySelector('#status').textContent = ''`);
+    await send('DOM.setFileInputFiles', { files: repairFiles, nodeId }, S);
+    if (!await waitFor(`document.querySelector('#status').textContent.startsWith('批量完成：2 个文件')`)) throw new Error('副本测试批量未完成');
+    await holdBatchJob('fixed-bad_crc_height.png');
+    await ev(`(() => {
+      const click = HTMLAnchorElement.prototype.click;
+      try {
+        HTMLAnchorElement.prototype.click = function () {};
+        document.querySelector('[data-fix-crc]').click();
+      } finally {
+        HTMLAnchorElement.prototype.click = click;
+      }
+    })()`);
+    if (!await waitFor(`typeof releaseBatchJob === 'function'`)) throw new Error('修复副本未进入分析');
+    await ev(`document.querySelector('[data-batch="1"]').click()`);
+    if (!await ev(`document.querySelector('#result h2').textContent.includes('deep_lsb.png')`)) throw new Error('修复副本覆盖了原批量队列');
+    await ev('releaseBatchJob()');
+    if (!await waitFor(`!document.querySelector('#analyze').disabled && document.querySelectorAll('.batch-row.done').length === 3`)) {
+      throw new Error('原两项与修复副本未同时保留');
+    }
+    const repair = await ev(`(async () => {
+      const stillSelected = document.querySelector('#result h2').textContent.includes('deep_lsb.png');
+      document.querySelector('[data-batch="2"]').click();
+      const derived = document.querySelector('#result h2').textContent.includes('fixed-bad_crc_height.png');
+      const click = HTMLAnchorElement.prototype.click;
+      const createURL = URL.createObjectURL;
+      const select = document.querySelector('#report-tpl');
+      const previousTemplate = select.value;
+      let markdown;
+      let download;
+      try {
+        select.value = 'full';
+        URL.createObjectURL = function (blob) {
+          if (blob.type === 'text/markdown') markdown = blob;
+          return createURL.call(this, blob);
+        };
+        HTMLAnchorElement.prototype.click = function () { download = this.download; };
+        document.querySelector('#report').click();
+        const report = markdown ? await markdown.text() : '';
+        return { stillSelected, derived, download,
+          original: report.includes('bad_crc_height.png') && report.includes('deep_lsb.png'),
+          includesDerived: report.includes('fixed-bad_crc_height.png') };
+      } finally {
+        select.value = previousTemplate;
+        URL.createObjectURL = createURL;
+        HTMLAnchorElement.prototype.click = click;
+      }
+    })()`);
+    if (!repair.stillSelected || !repair.derived || repair.download !== 'batch-misc-report.md' || !repair.original || repair.includesDerived) {
+      throw new Error('修复后切换或原批量报告异常：' + JSON.stringify(repair));
+    }
+    extra.repairBatch = repair;
+
+    // 实际更新进度前后，列表和完成项按钮要保留同一个 DOM 节点。
+    await holdBatchJob('f01.txt');
+    await send('DOM.setFileInputFiles', { files: capFiles.slice(0, 50), nodeId }, S);
+    if (!await waitFor(`typeof releaseBatchJob === 'function' && document.querySelectorAll('.batch-row.done').length === 1`)) {
+      throw new Error('批量滚动测试未到达第二项');
+    }
+    const scrollBefore = await ev(`(() => {
+      window.batchTestList = document.querySelector('.batch-list');
+      window.batchTestRow = document.querySelector('.batch-row.done');
+      batchTestList.scrollTop = 200;
+      batchTestRow.focus({ preventScroll: true });
+      return batchTestList.scrollTop;
+    })()`);
+    await ev('releaseBatchJob()');
+    if (!await waitFor(`document.querySelector('#status').textContent.startsWith('批量完成：50 个文件')`)) throw new Error('批量滚动测试未完成');
+    const scroll = await ev(`({
+      top: document.querySelector('.batch-list').scrollTop,
+      sameList: document.querySelector('.batch-list') === batchTestList,
+      sameRow: document.querySelector('[data-batch="0"]') === batchTestRow,
+      focused: document.activeElement === batchTestRow
+    })`);
+    if (scrollBefore <= 0 || scroll.top !== scrollBefore || !scroll.sameList || !scroll.sameRow || !scroll.focused) {
+      throw new Error('批量刷新丢失滚动或焦点：' + JSON.stringify({ before: scrollBefore, ...scroll }));
+    }
+    extra.batchScroll = { before: scrollBefore, ...scroll };
+
     console.log('PASS cdp-smoke:', JSON.stringify(Object.assign({}, diag, { selftest: diagSelf, zoom, batch: bd, active, diff: diffDiag, diffMode, zero: zd, cap: cd, media, extra })));
 
   } finally {

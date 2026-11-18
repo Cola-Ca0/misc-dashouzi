@@ -948,7 +948,7 @@ def fixture_zip_comment():
     import zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
-        z.writestr("a.txt", "hello")
+        _zip_add(z, "a.txt", b"hello", zipfile.ZIP_STORED)
         z.comment = b"flag{zip_comment}"
     return buf.getvalue()
 
@@ -958,7 +958,7 @@ def fixture_zip_lzma():
     import zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_LZMA) as z:
-        z.writestr("lz.txt", "flag{zip_lzma}")
+        _zip_add(z, "lz.txt", b"flag{zip_lzma}", zipfile.ZIP_LZMA)
     return buf.getvalue()
 
 
