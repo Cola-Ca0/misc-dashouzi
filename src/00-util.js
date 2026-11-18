@@ -319,6 +319,24 @@
     };
   }
 
+  // 产物下载名：原名之外，再按内容识别出的真实格式给一个扩展名
+  // 内嵌 ZIP / PNG 之类经常藏在 .bin 产物里，另存成正确后缀才能直接双击打开
+  const FORMAT_EXT = {
+    PNG: 'png', JPEG: 'jpg', GIF: 'gif', BMP: 'bmp', ICO: 'ico', TIFF: 'tif', WEBP: 'webp', SVG: 'svg',
+    ZIP: 'zip', RAR: 'rar', '7Z': '7z', GZIP: 'gz', PDF: 'pdf', WAV: 'wav', MP3: 'mp3',
+    PCAP: 'pcap', PCAPNG: 'pcapng', TAR: 'tar', BPG: 'bpg', TEXT: 'txt'
+  };
+  function alternateName(name, bytes) {
+    if (!bytes || !bytes.length) return '';
+    const ext = FORMAT_EXT[detectType(bytes).format];
+    if (!ext) return '';
+    const n = String(name || 'artifact');
+    const have = n.split('.').pop().toLowerCase();
+    if (have === ext || (ext === 'jpg' && have === 'jpeg') || (ext === 'tif' && have === 'tiff')) return '';
+    const base = n.replace(/\.[A-Za-z0-9]{1,8}$/, '') || 'artifact';
+    return base + '.' + ext;
+  }
+
   // ---------- 文件头被削 / 多出字节：猜格式并给出修复后的字节 ----------
   function _le32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
   function _be32(b, o) { return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0; }
@@ -577,7 +595,7 @@
     toU8, hex, hex32, bytesToHex, ascii, utf8, utf16le, cstr,
     entropy, printableRatio, strings, utf16strings,
     fnv1a, sha256,
-    detectType, detectDamagedHeader, startsWith, finding, artifact, safeSlice, concatBytes,
+    detectType, detectDamagedHeader, alternateName, startsWith, finding, artifact, safeSlice, concatBytes,
     setFlagFormat, getFlagFormat, isFlagFormatCustom, flagMatch, flagFindAll
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -834,6 +834,24 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     };
   }
 
+  // 产物下载名：原名之外，再按内容识别出的真实格式给一个扩展名
+  // 内嵌 ZIP / PNG 之类经常藏在 .bin 产物里，另存成正确后缀才能直接双击打开
+  const FORMAT_EXT = {
+    PNG: 'png', JPEG: 'jpg', GIF: 'gif', BMP: 'bmp', ICO: 'ico', TIFF: 'tif', WEBP: 'webp', SVG: 'svg',
+    ZIP: 'zip', RAR: 'rar', '7Z': '7z', GZIP: 'gz', PDF: 'pdf', WAV: 'wav', MP3: 'mp3',
+    PCAP: 'pcap', PCAPNG: 'pcapng', TAR: 'tar', BPG: 'bpg', TEXT: 'txt'
+  };
+  function alternateName(name, bytes) {
+    if (!bytes || !bytes.length) return '';
+    const ext = FORMAT_EXT[detectType(bytes).format];
+    if (!ext) return '';
+    const n = String(name || 'artifact');
+    const have = n.split('.').pop().toLowerCase();
+    if (have === ext || (ext === 'jpg' && have === 'jpeg') || (ext === 'tif' && have === 'tiff')) return '';
+    const base = n.replace(/\.[A-Za-z0-9]{1,8}$/, '') || 'artifact';
+    return base + '.' + ext;
+  }
+
   // ---------- 文件头被削 / 多出字节：猜格式并给出修复后的字节 ----------
   function _le32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
   function _be32(b, o) { return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0; }
@@ -1092,7 +1110,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     toU8, hex, hex32, bytesToHex, ascii, utf8, utf16le, cstr,
     entropy, printableRatio, strings, utf16strings,
     fnv1a, sha256,
-    detectType, detectDamagedHeader, startsWith, finding, artifact, safeSlice, concatBytes,
+    detectType, detectDamagedHeader, alternateName, startsWith, finding, artifact, safeSlice, concatBytes,
     setFlagFormat, getFlagFormat, isFlagFormatCustom, flagMatch, flagFindAll
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
@@ -10199,6 +10217,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
 
   // 未发布修复
   // - 修复 v1.0.0 遗留缺陷：批量导出速报或 WP 框架时抛出 TypeError。
+  // - 产物按内容识别出真实格式时，除原名外再给一个「另存 .zip / .png / …」的下载名。
   const CHANGELOG = [
     {
       version: '1.0.0', date: '2026-11-10', title: '首个正式版',
@@ -11954,6 +11973,7 @@ catch (e) {
       let thumb = '<div style="color:var(--muted);font-size:12px">无预览</div>';
       if (a.image) thumb = `<canvas data-art="${i}" width="1" height="1"></canvas>`;
       else if (a.bytes && isImageBytes(a.bytes)) thumb = `<img data-art="${i}" alt="">`;
+      const alt = a.bytes ? M.alternateName(a.name, a.bytes) : '';
       return `<div class="art">
         <div class="thumb">${thumb}</div>
         <div class="body">
@@ -11961,6 +11981,7 @@ catch (e) {
           <div class="m">${a.bytes ? fmtSize(a.bytes.length) : ''} ${esc(a.note || '')}</div>
           <div class="actions" style="margin-top:6px">
             ${a.bytes ? `<button class="mini" data-adl="${i}">下载</button>` : ''}
+            ${alt ? `<button class="mini" data-adl="${i}" data-adl-as="${esc(alt)}">另存 .${esc(alt.split('.').pop())}</button>` : ''}
           </div>
         </div>
       </div>`;
@@ -12486,7 +12507,7 @@ catch (e) {
       if (state.busy || gen !== renderSeq) return;
       const a = r.artifacts[parseInt(b.dataset.adl, 10)];
       if (!a || !a.bytes) return;
-      dl(a.name || 'artifact.bin', a.bytes);
+      dl(b.dataset.adlAs || a.name || 'artifact.bin', a.bytes);
     }));
     // PNG 修复
     $$('[data-fix-crc]').forEach(b => b.addEventListener('click', () => {

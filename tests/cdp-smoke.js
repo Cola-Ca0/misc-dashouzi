@@ -269,6 +269,12 @@ function zeroBmp() {
       await loadPath(path.join(ROOT, 'tests', 'fixtures', file), file, expectText);
     }
 
+    // 产物按内容识别出真实格式时，除了原名还要给一个「另存 .xxx」
+    await loadFixture('unused_data.png', '未消费数据');
+    const altNames = await ev(`[...document.querySelectorAll('[data-adl-as]')].map(b => b.dataset.adlAs)`);
+    if (altNames.indexOf('png-idat-rest.txt') < 0) throw new Error('产物另存名未渲染：' + JSON.stringify(altNames));
+    extra.altNames = altNames;
+
     await loadFixture('bad_crc_height.png', '校验 · 修复 · PNG');
     extra.png = await ev(`(() => {
       const t = document.querySelector('#crc-text');

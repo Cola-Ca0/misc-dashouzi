@@ -1119,6 +1119,7 @@
       let thumb = '<div style="color:var(--muted);font-size:12px">无预览</div>';
       if (a.image) thumb = `<canvas data-art="${i}" width="1" height="1"></canvas>`;
       else if (a.bytes && isImageBytes(a.bytes)) thumb = `<img data-art="${i}" alt="">`;
+      const alt = a.bytes ? M.alternateName(a.name, a.bytes) : '';
       return `<div class="art">
         <div class="thumb">${thumb}</div>
         <div class="body">
@@ -1126,6 +1127,7 @@
           <div class="m">${a.bytes ? fmtSize(a.bytes.length) : ''} ${esc(a.note || '')}</div>
           <div class="actions" style="margin-top:6px">
             ${a.bytes ? `<button class="mini" data-adl="${i}">下载</button>` : ''}
+            ${alt ? `<button class="mini" data-adl="${i}" data-adl-as="${esc(alt)}">另存 .${esc(alt.split('.').pop())}</button>` : ''}
           </div>
         </div>
       </div>`;
@@ -1651,7 +1653,7 @@
       if (state.busy || gen !== renderSeq) return;
       const a = r.artifacts[parseInt(b.dataset.adl, 10)];
       if (!a || !a.bytes) return;
-      dl(a.name || 'artifact.bin', a.bytes);
+      dl(b.dataset.adlAs || a.name || 'artifact.bin', a.bytes);
     }));
     // PNG 修复
     $$('[data-fix-crc]').forEach(b => b.addEventListener('click', () => {

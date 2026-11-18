@@ -1226,5 +1226,17 @@ console.log('\n== ZIP 边界与 ZIP64 ==');
   check('LZMA 截断报部分恢复', aCut.findings.some(f => f.type === 'zip_extract'),
     JSON.stringify({ titles: aCut.findings.map(f => f.title), notes: aCut.artifacts.map(a => a.note) }));
 }
+console.log('\n== 产物另存名 ==');
+{
+  const zipHead = Buffer.from([0x50, 0x4B, 0x03, 0x04, 0, 0, 0, 0]);
+  const pngHead = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  check('内嵌 ZIP 给出 .zip 另存名', M.alternateName('stream-zlib-0x10.bin', zipHead) === 'stream-zlib-0x10.zip',
+    M.alternateName('stream-zlib-0x10.bin', zipHead));
+  check('内嵌 PNG 给出 .png 另存名', M.alternateName('lsb-3-b1-gbr.bin', pngHead) === 'lsb-3-b1-gbr.png',
+    M.alternateName('lsb-3-b1-gbr.bin', pngHead));
+  check('已是正确后缀不再另给', M.alternateName('a.zip', zipHead) === '', M.alternateName('a.zip', zipHead));
+  check('未知格式不另给', M.alternateName('a.bin', Buffer.from([1, 2, 3, 4, 5, 6])) === '',
+    M.alternateName('a.bin', Buffer.from([1, 2, 3, 4, 5, 6])));
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }
