@@ -673,6 +673,23 @@ def _embed_bits_lsb(vals, msg, channel=0, channels=1, offset=0):
     return out
 
 
+def fixture_lnk():
+    import struct
+    flags = 0x04 | 0x08 | 0x10 | 0x20 | 0x40
+    hdr = struct.pack("<I", 0x4C) + bytes.fromhex("0114020000000000C000000000000046")
+    hdr += struct.pack("<II", flags, 0x20)
+    hdr += struct.pack("<QQQ", 0, 0, 0)
+    hdr += struct.pack("<III", 1234, 0, 1)
+    hdr += struct.pack("<HHII", 0, 0, 0, 0)
+
+    def s16(s):
+        return struct.pack("<H", len(s)) + s.encode("utf-16le")
+
+    body = (s16("flag.lnk") + s16("..\\flag.exe") + s16("C:\\Temp")
+            + s16("--flag flag{lnk_args}") + s16("shell32.dll"))
+    return hdr + body + struct.pack("<I", 0)
+
+
 def fixture_dtmf_wav():
     import math
     sr = 8000
@@ -1265,6 +1282,7 @@ FIXTURES = [
     ("nested_png.png", fixture_nested_png, []),
     ("wav_lsb.wav", fixture_wav_lsb, ["音频 LSB 候选", "flag{wav_lsb}"]),
     ("dtmf.wav", fixture_dtmf_wav, ["DTMF", "1800#*5"]),
+    ("link.lnk", fixture_lnk, ["LNK", "flag{lnk_args}"]),
     ("wav_extensible.wav", fixture_wav_extensible, ["WAVE_FORMAT_EXTENSIBLE", "flag{wav_extensible}"]),
     ("wav_stereo_lsb.wav", fixture_wav_stereo_lsb, ["音频 LSB 候选", "flag{wav_stereo}"]),
     ("wav_trailer.wav", fixture_wav_trailer, ["RIFF 结束之后还有数据", "flag{wav_trailer}"]),

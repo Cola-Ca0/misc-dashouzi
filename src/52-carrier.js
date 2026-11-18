@@ -195,5 +195,139 @@
     return { findings, artifacts };
   }
 
-  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE });
+  // ---------- Windows 快捷方式 (.lnk) ----------
+  function lnkTime(lo, hi) {
+    const v = hi * 0x100000000 + lo;
+    if (!v) return '';
+    const ms = v / 10000 - 11644473600000;
+    const d = new Date(ms);
+    return isNaN(d.getTime()) ? '' : d.toISOString().replace('T', ' ').slice(0, 19);
+  }
+  function lnkUtf16(b, at, chars) {
+    let s = '';
+    for (let i = 0; i < chars; i++) {
+      const o = at + i * 2;
+      if (o + 1 >= b.length) break;
+      const c = b[o] | (b[o + 1] << 8);
+      if (c) s += String.fromCharCode(c);
+    }
+    return s;
+  }
+
+  function auditLNK(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    if (b.length < 76 || b[0] !== 0x4C) {
+      return { findings: [finding('L0', 'format', '不是 LNK', { detail: 'HeaderSize 不是 0x4C 或长度不足' })], artifacts };
+    }
+    const flags = le32(b, 20);
+    const fileSize = le32(b, 52);
+    const iconIndex = le32(b, 56);
+    const showCmd = le32(b, 60);
+    const out = {
+      flags, fileSize, iconIndex, showCmd,
+      created: lnkTime(le32(b, 28), le32(b, 32)),
+      accessed: lnkTime(le32(b, 36), le32(b, 40)),
+      written: lnkTime(le32(b, 44), le32(b, 48))
+    };
+    let p = 76;
+    try {
+      if (flags & 0x01) {                 // LinkTargetIDList
+        if (p + 2 > b.length) throw new Error('IDList 越界');
+        const sz = le16(b, p); p += 2 + sz;
+        out.idListSize = sz;
+        p = Math.min(p, b.length);
+      }
+      if ((flags & 0x02) && !(flags & 0x100)) {   // LinkInfo
+        if (p + 0x1C <= b.length) {
+          const size = le32(b, p);
+          const lbp = le32(b, p + 16);
+          if (lbp && p + lbp < b.length) {
+            let e = p + lbp;
+            while (e < b.length && b[e]) e++;
+            out.localBasePath = ascii(b.subarray(p + lbp, e), e - (p + lbp));
+          }
+          if (size >= 0x1C && p + size <= b.length) p += size;
+        }
+      }
+      const readStr = () => {
+        if (p + 2 > b.length) return '';
+        const n = le16(b, p); p += 2;
+        const s = lnkUtf16(b, p, n);
+        p += n * 2;
+        return s;
+      };
+      if (flags & 0x04) out.nameString = readStr();
+      if (flags & 0x08) out.relativePath = readStr();
+      if (flags & 0x10) out.workingDir = readStr();
+      if (flags & 0x20) out.arguments = readStr();
+      if (flags & 0x40) out.iconLocation = readStr();
+
+      const extra = [];
+      let guard = 0;
+      while (p + 8 <= b.length && guard++ < 64) {
+        const size = le32(b, p);
+        const sig = le32(b, p + 4);
+        if (!size || size < 8) break;
+        if (p + size > b.length) { extra.push({ sig, size, truncated: true }); break; }
+        // TrackerDataBlock：MachineID(16 字节 UTF-16) + Droid + DroidBirth
+        if ((sig >>> 0) === 0xA0000003 && size >= 0x60) out.machineId = lnkUtf16(b, p + 16, 8);
+        extra.push({ sig: '0x' + hex(sig >>> 0, 8), size, at: p });
+        p += size;
+      }
+      out.extra = extra;
+      out.consumed = p;
+    } catch (e) {
+      out.parseError = String(e && e.message || e);
+    }
+
+    findings.push(finding('L2', 'lnk', 'Windows 快捷方式（LNK）', {
+      confidence: 0.95, offset: 0,
+      declared: 'flags 0x' + hex(flags >>> 0, 8),
+      actual: out.localBasePath || out.relativePath || out.nameString || '（无路径字段）',
+      detail: [
+        out.arguments ? '参数：' + out.arguments : '',
+        out.workingDir ? '工作目录：' + out.workingDir : '',
+        out.iconLocation ? '图标：' + out.iconLocation : '',
+        out.machineId ? 'TrackerDataBlock 机器名：' + out.machineId : ''
+      ].filter(Boolean).join('\n'),
+      preview: [out.arguments, out.relativePath, out.localBasePath].filter(Boolean).join(' | ')
+    }));
+    if (out.arguments) {
+      findings.push(finding('L3', 'lnk_args', 'LNK 命令行参数', {
+        confidence: 0.9, actual: out.arguments.slice(0, 400), preview: out.arguments
+      }));
+    }
+    if (out.machineId) {
+      findings.push(finding('L3', 'lnk_machine', 'LNK 记录的原机器名：' + out.machineId, {
+        confidence: 0.85, actual: out.machineId,
+        detail: 'TrackerDataBlock 的 MachineID 来自创建者主机，取证题常用来定位设备。'
+      }));
+    }
+    if (out.created || out.written) {
+      findings.push(finding('L3', 'lnk_time', 'LNK 时间戳', {
+        confidence: 0.6,
+        declared: 'FILETIME（UTC）',
+        actual: [out.created && '创建 ' + out.created, out.written && '修改 ' + out.written, out.accessed && '访问 ' + out.accessed].filter(Boolean).join(' · ')
+      }));
+    }
+    if (out.extra && out.extra.length) {
+      findings.push(finding('L3', 'lnk_extra', `ExtraData ${out.extra.length} 块`, {
+        confidence: 0.5,
+        actual: out.extra.map(x => x.sig + '(' + x.size + ')').join(', ')
+      }));
+    }
+    if (out.consumed && out.consumed < b.length) {
+      const tail = b.subarray(out.consumed);
+      findings.push(finding('L2', 'lnk_trailer', `LNK 解析结束后还有 ${tail.length} 字节`, {
+        confidence: 0.9, offset: out.consumed,
+        detail: '尾部附加是 LNK 题的常见夹带位（base64/CAB/压缩包）。',
+        preview: ascii(tail.subarray(0, 160), Math.min(160, tail.length))
+      }));
+      artifacts.push(artifact('lnk-trailer.bin', tail, 'LNK 尾部附加数据'));
+    }
+    return { findings, artifacts, image: null, lnk: out };
+  }
+
+  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

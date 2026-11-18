@@ -1277,5 +1277,13 @@ console.log('\n== DTMF ==');
     JSON.stringify(a.audio && a.audio.dtmf && { text: a.audio.dtmf.text, n: a.audio.dtmf.tones }));
   check('DTMF 写进发现', findingText(M.analyze(w, 'dtmf.wav', {})).indexOf('DTMF') >= 0, '');
 }
+console.log('\n== LNK ==');
+{
+  const l = fs.readFileSync(path.join(__dirname, 'fixtures', 'link.lnk'));
+  check('LNK 类型识别', M.detectType(l, 'x.lnk').format === 'LNK', M.detectType(l, 'x.lnk').format);
+  const txt = findingText(M.analyze(l, 'link.lnk', {}));
+  check('LNK 解出命令行参数', txt.indexOf('flag{lnk_args}') >= 0, txt.slice(0, 200));
+  check('LNK 解出相对路径', txt.indexOf('..\\flag.exe') >= 0, '');
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }
