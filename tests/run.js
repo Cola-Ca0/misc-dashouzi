@@ -1200,6 +1200,31 @@ console.log('\n== ZIP 边界与 ZIP64 ==');
   const wrongCrc = buildZip([{ name: 'c.txt', data: payload, cdCrc: 0x12345678 }]);
   const ac = M.auditZIP(wrongCrc, 'crc.zip');
   check('stored CRC 不符被检出', ac.findings.some(f => /CRC/.test(f.title)), JSON.stringify(ac.findings.map(f => f.title)));
+
+  // method 14：只喂条目自己的字节，且与相邻 stored 成员的先后顺序无关
+  const lzfix = fs.readFileSync(path.join(__dirname, 'fixtures', 'zip_lzma.zip'));
+  const lzE = M.parseZIP(lzfix).entries[0];
+  const lzData = lzfix.subarray(lzE.dataStart, lzE.dataStart + lzE.csize);
+  const marker = Buffer.from('order-marker', 'latin1');
+  const mkLz = storedFirst => buildZip([
+    ...(storedFirst ? [{ name: 'x.txt', data: marker }] : []),
+    { name: 'lz.txt', method: 14, data: lzData, localCrc: 0, cdCrc: 0, cd: { usize: lzE.usize } },
+    ...(storedFirst ? [] : [{ name: 'y.txt', data: marker }])
+  ]);
+  const zA = mkLz(true), zB = mkLz(false);
+  const decA = M.auditZIP(zA, 'a.zip').artifacts.find(a => /lz\.txt/.test(a.name));
+  const decB = M.auditZIP(zB, 'b.zip').artifacts.find(a => /lz\.txt/.test(a.name));
+  check('LZMA 成员与顺序无关', !!decA && !!decB && Buffer.compare(Buffer.from(decA.bytes), Buffer.from(decB.bytes)) === 0,
+    JSON.stringify({ a: decA && decA.bytes.length, b: decB && decB.bytes.length }));
+  const uLz = M.unzipEntry(zA, M.parseZIP(zA).entries.find(e => e.name === 'lz.txt'));
+  check('LZMA 只喂条目自己的字节', uLz.fed === lzData.length - 9,
+    JSON.stringify({ fed: uLz.fed, expect: lzData.length - 9, csize: lzData.length }));
+
+  // 流被截断时必须报出来，不能当成「已解压」
+  const zCut = buildZip([{ name: 'lz.txt', method: 14, data: lzData.subarray(0, 13), localCrc: 0, cdCrc: 0, cd: { usize: lzE.usize } }]);
+  const aCut = M.auditZIP(zCut, 'cut.zip');
+  check('LZMA 截断报部分恢复', aCut.findings.some(f => f.type === 'zip_extract'),
+    JSON.stringify({ titles: aCut.findings.map(f => f.title), notes: aCut.artifacts.map(a => a.note) }));
 }
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }

@@ -5569,9 +5569,11 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     }
     if (e.method === 14 && MDZ.lzmaDecompressAlone) {
       // method 14：2 字节版本 + 2 字节 props 长度(=5) + props/dict(5) + 裸 LZMA 数据
+      // end 已按条目自己的 csize 截过：后面的成员和中央目录不会被喂进解码器
+      if (e.dataStart + 4 > b.length) return { data: null, error: 'LZMA 头部缺失' };
       const ps = le16(b, e.dataStart + 2);
       if (ps !== 5) return { data: null, error: 'LZMA 头部异常' };
-      const rest = b.length - (e.dataStart + 4 + ps);
+      const rest = end - (e.dataStart + 4 + ps);
       if (rest <= 0) return { data: null, error: 'LZMA 数据缺失' };
       const hdr = new Uint8Array(13 + rest);
       hdr.set(b.subarray(e.dataStart + 4, e.dataStart + 9), 0);
@@ -5580,11 +5582,11 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
       } else {
         for (let i = 0; i < 8; i++) hdr[5 + i] = 0xFF;
       }
-      hdr.set(b.subarray(e.dataStart + 4 + ps), 13);
+      hdr.set(b.subarray(e.dataStart + 4 + ps, end), 13);
       const dz = MDZ.lzmaDecompressAlone(hdr, { maxOut: 64 * 1024 * 1024 });
-      return { data: dz.out && dz.out.length ? dz.out : null, error: dz.error };
+      return { data: dz.out && dz.out.length ? dz.out : null, error: dz.error, partial: !!dz.partial, fed: rest };
     }
-    return { data: null, error: 'method ' + e.method + ' 未支持' };
+    return { data: null, error: 'method ' + e.method + ' 未支持', unsupported: true };
   }
 
   function auditZIP(input, name) {
@@ -5631,7 +5633,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
         artifacts.push(artifact('zip-' + (e.name || 'entry'), r.data,
           'ZIP 条目（method ' + e.method + (e.method === 0 ? ' stored' : '，已解压') + '）' + (r.partial ? ' · 部分提取' : '')));
       }
-      if (r.error && e.method !== 0 && e.method !== 8) {
+      if (r.error && r.unsupported) {
         findings.push(finding('L2', 'zip_method', 'ZIP 条目 ' + e.name + '：' + r.error, {
           confidence: 0.8, offset: e.offset,
           declared: 'method ' + e.method, actual: '未提取',
@@ -5656,7 +5658,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     isGIF, parseGIF, auditGIF, lzwDecode, deinterlaceGIF, gifFrameImage, editGIFDims,
     isICO, parseICO, auditICO,
     isSVG, auditSVG,
-    isZIP, parseZIP, auditZIP, b64decode,
+    isZIP, parseZIP, unzipEntry, auditZIP, b64decode,
     isTIFF, auditTIFF, isWEBP, auditWEBP
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
