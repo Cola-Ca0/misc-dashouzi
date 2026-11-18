@@ -279,20 +279,32 @@
     if (type !== 1 && type !== 2 && type !== 3 && type !== 9 && type !== 10 && type !== 11) return false;
     const w = b[12] | (b[13] << 8), h = b[14] | (b[15] << 8);
     if (!w || !h) return false;
-    const bpp = b[16], pix = b[17];
-    if (bpp !== 8 && bpp !== 15 && bpp !== 16 && bpp !== 24 && bpp !== 32) return false;
-    if (pix !== 8 && pix !== 16 && pix !== 24 && pix !== 32) return false;
+    const depth = b[16], desc = b[17];
+    if (depth !== 8 && depth !== 15 && depth !== 16 && depth !== 24 && depth !== 32) return false;
+    if ((desc & 0x0F) > depth) return false;
     if (idLen && 18 + idLen > b.length) return false;
     if (b.length >= 26) {
       const tail = ascii(b.subarray(b.length - 18, b.length), 18);
       if (tail.indexOf('TRUEVISION-XFILE') === 0) return true;
     }
+    const off = 18 + idLen + (cmap === 1 ? (b[5] | (b[6] << 8)) * Math.ceil(b[7] / 8) : 0);
+    const bytesPerPixel = Math.ceil(depth / 8);
     if (type === 2 || type === 3) {
-      const off = 18 + idLen + (cmap === 1 ? (b[5] | (b[6] << 8)) * Math.ceil(b[7] / 8) : 0);
-      const need = w * h * Math.ceil(pix / 8);
+      const need = w * h * bytesPerPixel;
       return b.length >= off + need - 16 && b.length <= off + need + 4096;
     }
-    return false;
+    // RLE：走一遍包头，能正好覆盖 w*h 个像素才算数
+    let p = off, px = 0, guard = 0;
+    while (px < w * h && guard++ < 2000000) {
+      if (p >= b.length) return false;
+      const hd = b[p++];
+      const cnt = (hd & 0x7F) + 1;
+      const bytes = (hd & 0x80) ? bytesPerPixel : cnt * bytesPerPixel;
+      if (p + bytes > b.length) return false;
+      p += bytes;
+      px += cnt;
+    }
+    return px >= w * h;
   }
 
   function detectType(input, name) {

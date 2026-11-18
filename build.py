@@ -598,6 +598,27 @@ def _zip_add(z, name, data, method):
     z.writestr(zi, data)
 
 
+def fixture_tga():
+    import struct
+    w, h = 16, 16
+    hdr = bytes([0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]) + struct.pack("<HH", w, h) + bytes([24, 0x20])
+    px = bytearray()
+    for y in range(h):
+        for x in range(w):
+            px += bytes([(x * 16) & 255, (y * 16) & 255, (x ^ y) & 255])
+    return hdr + bytes(px)
+
+
+def fixture_tga_rle():
+    import struct
+    w, h = 16, 16
+    hdr = bytes([0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0]) + struct.pack("<HH", w, h) + bytes([24, 0x20])
+    px = bytearray()
+    for y in range(h):
+        px += bytes([0x8F, y, 255 - y, 255])
+    return hdr + bytes(px)
+
+
 def fixture_bzip2():
     import bz2
     return bz2.compress(b"flag{bzip2_layers} " + b"padding " * 64, 9)
@@ -1202,6 +1223,8 @@ FIXTURES = [
     ("zip_plain.zip", fixture_zip_plain, ["ZIP 条目", "flag{zip_entry}"]),
     ("bzip2_text.bz2", fixture_bzip2, ["bzip2 解压", "flag{bzip2_layers}"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
+    ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
+    ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),
     ("palette.png", fixture_palette_png, []),
     ("plte_unused.png", fixture_plte_unused, ["未使用颜色", "flag{plte_unused}"]),
     ("apng_lsb.png", fixture_apng_lsb, ["APNG 动画", "flag{apng_lsb}"]),

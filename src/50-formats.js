@@ -898,11 +898,147 @@
     return { findings, artifacts, image: null, parsed: z };
   }
 
+  // ---------- TGA ----------
+  // 无魔数格式：18 字节头 + 可选 ID/调色板 + 像素（可 RLE）+ 可选 26 字节 footer
+  function parseTGA(b) {
+    if (b.length < 18) return { error: '不足 18 字节' };
+    const info = {
+      idLength: b[0], colorMapType: b[1], imageType: b[2],
+      colorMapFirst: le16(b, 3), colorMapLength: le16(b, 5), colorMapDepth: b[7],
+      xOrigin: le16(b, 8), yOrigin: le16(b, 10),
+      width: le16(b, 12), height: le16(b, 14),
+      pixelDepth: b[16], descriptor: b[17]
+    };
+    if (info.width <= 0 || info.height <= 0) return { error: '宽高为 0' };
+    if (![8, 15, 16, 24, 32].includes(info.pixelDepth)) return { error: 'bpp=' + info.pixelDepth + ' 不支持' };
+    if (![1, 2, 3, 9, 10, 11].includes(info.imageType)) return { error: 'imageType=' + info.imageType + ' 不支持' };
+    const bpp = Math.ceil(info.pixelDepth / 8);
+    const cmapBytes = info.colorMapType ? info.colorMapLength * Math.ceil(info.colorMapDepth / 8) : 0;
+    info.dataOffset = 18 + info.idLength + cmapBytes;
+    info.topDown = !!(info.descriptor & 0x20);
+    info.rightToLeft = !!(info.descriptor & 0x10);
+    info.rle = info.imageType >= 9;
+    info.footer = null;
+    if (b.length >= 26) {
+      const t = b.subarray(b.length - 18, b.length);
+      if (ascii(t, 18).indexOf('TRUEVISION-XFILE') === 0) {
+        info.footer = { extOffset: le32(b, b.length - 26), devOffset: le32(b, b.length - 22) };
+      }
+    }
+    if (info.dataOffset > b.length) return { error: '像素数据偏移越界' };
+    return info;
+  }
+
+  function decodeTGA(b, info) {
+    const bpp = Math.ceil(info.pixelDepth / 8);
+    const n = info.width * info.height;
+    const R = new Uint8Array(n), G = new Uint8Array(n), B = new Uint8Array(n), A = new Uint8Array(n);
+    const cmapDst = Math.ceil(info.colorMapDepth / 8);
+    const cmapStart = 18 + info.idLength;
+    const baseType = info.rle ? info.imageType - 8 : info.imageType;
+    const pick = (at) => {
+      // 返回 [r,g,b,a]
+      if (baseType === 1) {
+        const idx = bpp === 1 ? b[at] : le16(b, at);
+        const off = cmapStart + (idx - info.colorMapFirst) * cmapDst;
+        if (off < 0 || off + cmapDst > b.length) return [0, 0, 0, 0];
+        if (cmapDst === 2) {
+          const v = le16(b, off);
+          return [((v >> 10) & 31) << 3, ((v >> 5) & 31) << 3, (v & 31) << 3, 255];
+        }
+        if (cmapDst === 3) return [b[off + 2], b[off + 1], b[off], 255];
+        return [b[off + 2], b[off + 1], b[off], b[off + 3]];
+      }
+      if (baseType === 3) {
+        if (bpp === 1) return [b[at], b[at], b[at], 255];
+        return [b[at], b[at], b[at], 255];
+      }
+      if (bpp === 2) {
+        const v = le16(b, at);
+        return [((v >> 10) & 31) << 3, ((v >> 5) & 31) << 3, (v & 31) << 3, (v & 0x8000) ? 255 : 255];
+      }
+      if (bpp === 3) return [b[at + 2], b[at + 1], b[at], 255];
+      return [b[at + 2], b[at + 1], b[at], b[at + 3]];
+    };
+    let p = info.dataOffset;
+    let i = 0;
+    try {
+      while (i < n) {
+        let count = 1, repeated = false;
+        if (info.rle) {
+          if (p >= b.length) throw new Error('RLE 数据提前结束');
+          const hdr = b[p++];
+          count = (hdr & 0x7F) + 1;
+          repeated = !!(hdr & 0x80);
+        }
+        if (repeated) {
+          if (p + bpp > b.length) throw new Error('像素数据被截断');
+          const px = pick(p); p += bpp;
+          for (let k = 0; k < count && i < n; k++, i++) { R[i] = px[0]; G[i] = px[1]; B[i] = px[2]; A[i] = px[3]; }
+        } else {
+          for (let k = 0; k < count && i < n; k++, i++) {
+            if (p + bpp > b.length) throw new Error('像素数据被截断');
+            const px = pick(p); p += bpp;
+            R[i] = px[0]; G[i] = px[1]; B[i] = px[2]; A[i] = px[3];
+          }
+        }
+      }
+    } catch (e) {
+      return { width: info.width, height: info.height, bitDepth: info.pixelDepth, colorType: 'TGA', channels: { R, G, B, A }, error: String(e && e.message || e), consumed: p };
+    }
+    return {
+      width: info.width, height: info.height, bitDepth: info.pixelDepth, colorType: 'TGA',
+      channels: { R, G, B, A }, error: null, consumed: p
+    };
+  }
+
+  function auditTGA(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    const info = parseTGA(b);
+    if (info.error) return { findings: [finding('L0', 'format', '不是 TGA', { detail: info.error })], artifacts, image: null, info };
+    const dec = decodeTGA(b, info);
+    findings.push(finding('L1', 'tga', `TGA ${info.width} × ${info.height} · ${info.pixelDepth} bpp${info.rle ? ' · RLE' : ''}`, {
+      confidence: 0.9, offset: 0,
+      declared: `imageType ${info.imageType}${info.colorMapType ? '，调色板 ' + info.colorMapLength + ' 项' : ''}`,
+      actual: dec.error ? dec.error : `${dec.consumed - info.dataOffset} 字节像素`,
+      detail: (info.topDown ? '原点在左上' : '原点在左下（自下而上）') + (info.rightToLeft ? '，列方向从右到左' : '')
+        + (info.idLength ? `；图像 ID ${info.idLength} 字节` : ''),
+      recipe: '直接查看像素；TGA 无压缩头，改宽高只需改 12-15 字节'
+    }));
+    if (dec.error) {
+      findings.push(finding('L2', 'tga_partial', 'TGA 像素不完整：' + dec.error, {
+        confidence: 0.9, actual: '部分解码'
+      }));
+    }
+    if (info.footer) {
+      findings.push(finding('L2', 'tga_footer', 'TGA footer（扩展区/开发者目录）', {
+        confidence: 0.8, offset: b.length - 26,
+        declared: 'TRUEVISION-XFILE',
+        actual: `扩展区 0x${hex(info.footer.extOffset)}，开发者目录 0x${hex(info.footer.devOffset)}`,
+        detail: '扩展区（495 字节）里有作者名、注释、色表等字段，是常见的夹带位置。'
+      }));
+    }
+    const end = dec.consumed || b.length;
+    if (end < b.length && !info.footer) {
+      const tail = b.subarray(end);
+      findings.push(finding('L1', 'tga_trailer', `像素之后还有 ${tail.length} 字节`, {
+        confidence: tail.some(x => x !== 0) ? 0.95 : 0.6, offset: end,
+        declared: `像素区应到 0x${hex(end)}`, actual: `文件到 0x${hex(b.length)}`,
+        detail: '多出来的尾部一般就是夹带数据。',
+        preview: ascii(tail.subarray(0, 120), Math.min(120, tail.length))
+      }));
+      artifacts.push(artifact('tga-trailer.bin', tail, 'TGA 尾部附加数据'));
+    }
+    return { findings, artifacts, image: dec.error ? null : dec, info, parsed: { info, consumed: dec.consumed } };
+  }
+
   Object.assign(MDZ, {
     isGIF, parseGIF, auditGIF, lzwDecode, deinterlaceGIF, gifFrameImage, editGIFDims,
     isICO, parseICO, auditICO,
     isSVG, auditSVG,
     isZIP, parseZIP, unzipEntry, auditZIP, b64decode,
-    isTIFF, auditTIFF, isWEBP, auditWEBP
+    isTIFF, auditTIFF, isWEBP, auditWEBP,
+    parseTGA, decodeTGA, auditTGA
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

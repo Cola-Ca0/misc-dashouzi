@@ -1252,5 +1252,22 @@ console.log('\n== bzip2 ==');
   const zc = M.inflateBzip2(cut, 0, 1 << 20);
   check('bzip2 截断必须报错', !!zc.error || !zc.crcOk, zc.error || 'crc ok');
 }
+console.log('\n== TGA ==');
+{
+  const t = fs.readFileSync(path.join(__dirname, 'fixtures', 'tga_truecolor.tga'));
+  check('TGA 类型识别', M.detectType(t, 'x.tga').format === 'TGA', M.detectType(t, 'x.tga').format);
+  const dec = M.decodeTGA(t, M.parseTGA(t));
+  check('TGA 解码尺寸与像素', !dec.error && dec.width === 16 && dec.height === 16 && dec.channels.R[5] === 5 && dec.channels.B[5] === 80 && dec.channels.G[16] === 16,
+    dec.error || JSON.stringify({ r5: dec.channels.R[5], b5: dec.channels.B[5], g16: dec.channels.G[16] }));
+  const r = fs.readFileSync(path.join(__dirname, 'fixtures', 'tga_rle.tga'));
+  const rd = M.decodeTGA(r, M.parseTGA(r));
+  check('TGA RLE 解码', !rd.error && rd.channels.R[0] === 255 && rd.channels.G[0] === 255 && rd.channels.B[0] === 0,
+    rd.error || JSON.stringify({ r: rd.channels.R[0], g: rd.channels.G[0], b: rd.channels.B[0] }));
+  const withTail = Buffer.concat([t, Buffer.from('flag{tga_trailer}', 'latin1')]);
+  const at = M.auditTGA(withTail, 'x.tga');
+  check('TGA 尾部附加被检出', at.findings.some(f => f.type === 'tga_trailer'), JSON.stringify(at.findings.map(f => f.title)));
+  const full = M.analyze(t, 'x.tga', {});
+  check('TGA 进入图片扫描链', findingText(full).indexOf('TGA 16 × 16') >= 0, findingText(full).slice(0, 120));
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }
