@@ -1269,5 +1269,13 @@ console.log('\n== TGA ==');
   const full = M.analyze(t, 'x.tga', {});
   check('TGA 进入图片扫描链', findingText(full).indexOf('TGA 16 × 16') >= 0, findingText(full).slice(0, 120));
 }
+console.log('\n== DTMF ==');
+{
+  const w = fs.readFileSync(path.join(__dirname, 'fixtures', 'dtmf.wav'));
+  const a = M.auditWAV(w, 'dtmf.wav');
+  check('DTMF 解出拨号串', !!(a.audio && a.audio.dtmf && a.audio.dtmf.text === '1800#*5'),
+    JSON.stringify(a.audio && a.audio.dtmf && { text: a.audio.dtmf.text, n: a.audio.dtmf.tones }));
+  check('DTMF 写进发现', findingText(M.analyze(w, 'dtmf.wav', {})).indexOf('DTMF') >= 0, '');
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }

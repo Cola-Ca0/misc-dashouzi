@@ -882,12 +882,88 @@
         }));
         artifacts.push(artifact('morse.txt', Uint8Array.from(Array.from(m.text).map(c => c.charCodeAt(0))), 'Morse 解码文本'));
       }
+      const d = dtmfDecode(pcm, {});
+      audio.dtmf = d;
+      if (d.text && d.text.length >= 3) {
+        const bytes = Uint8Array.from(Array.from(d.text).map(c => c.charCodeAt(0)));
+        findings.push(finding('L4', 'dtmf', `DTMF 拨号音解码：${d.text}`, {
+          confidence: 0.85, preview: d.text,
+          declared: `${d.segments.length} 个按键`,
+          actual: d.text,
+          detail: '双组频率逐帧判定（Goertzel）：必须高低两组同时成立才算一个按键。',
+          recipe: '电话录音里的拨号音通常就是密码',
+          payload: { name: 'dtmf.txt', bytes }
+        }));
+        artifacts.push(artifact('dtmf.txt', bytes, 'DTMF 解码文本'));
+      }
     }
     return { findings, artifacts, image: null, audio };
   }
 
+  // ---------- DTMF ----------
+  // 电话拨号音：低组 4 个 + 高组 4 个，两个频率同时成立才算一个按键
+  const DTMF_LOW = [697, 770, 852, 941];
+  const DTMF_HIGH = [1209, 1336, 1477, 1633];
+  const DTMF_KEYS = [['1', '2', '3', 'A'], ['4', '5', '6', 'B'], ['7', '8', '9', 'C'], ['*', '0', '#', 'D']];
+
+  function dtmfDecode(pcm, opts) {
+    const o = opts || {};
+    const mix = mixSamples(pcm);
+    const sr = pcm.sampleRate || 8000;
+    const winMs = o.window || 25;
+    const win = Math.max(32, Math.round(sr * winMs / 1000));
+    const goertzel = (start, len, freq) => {
+      const w = 2 * Math.PI * freq / sr;
+      const c = 2 * Math.cos(w);
+      let s0 = 0, s1 = 0, s2 = 0;
+      for (let i = 0; i < len; i++) {
+        s0 = mix[start + i] + c * s1 - s2;
+        s2 = s1; s1 = s0;
+      }
+      return s1 * s1 + s2 * s2 - c * s1 * s2;
+    };
+    const frames = [];
+    let maxRms = 0;
+    for (let start = 0; start + win <= mix.length; start += win) {
+      const le = DTMF_LOW.map(f => goertzel(start, win, f));
+      const he = DTMF_HIGH.map(f => goertzel(start, win, f));
+      let ss = 0;
+      for (let i = 0; i < win; i++) ss += mix[start + i] * mix[start + i];
+      const rms = Math.sqrt(ss / win);
+      if (rms > maxRms) maxRms = rms;
+      frames.push({ at: start, le, he, rms });
+    }
+    // 逐帧判定：两组里的峰值都要压过本组其它频率，且总能量占比过半
+    const tones = [];
+    let cur = null;
+    const floor = maxRms * 0.1;
+    for (const f of frames) {
+      const li = f.le.indexOf(Math.max(...f.le));
+      const hi = f.he.indexOf(Math.max(...f.he));
+      const lsum = f.le.reduce((a, b) => a + b, 0);
+      const hsum = f.he.reduce((a, b) => a + b, 0);
+      const peak = f.le[li] + f.he[hi];
+      const rest = lsum + hsum - peak;
+      const ok = f.rms > floor && lsum > 0 && hsum > 0 &&
+        f.le[li] / lsum > 0.7 && f.he[hi] / hsum > 0.7 && peak > rest * 4;
+      const key = li + ':' + hi;
+      if (ok) {
+        if (cur && cur.key === key) cur.frames++;
+        else { if (cur) tones.push(cur); cur = { key, li, hi, frames: 1, at: f.at }; }
+      } else if (cur) { tones.push(cur); cur = null; }
+    }
+    if (cur) tones.push(cur);
+    const minFrames = Math.max(2, Math.round(40 / winMs));
+    const segs = [];
+    for (const t of tones) {
+      if (t.frames < minFrames) continue;
+      segs.push({ key: DTMF_KEYS[t.li][t.hi], frames: t.frames, atMs: Math.round(t.at / sr * 1000) });
+    }
+    return { text: segs.map(s => s.key).join(''), segments: segs, tones: tones.length };
+  }
+
   Object.assign(MDZ, {
     parseWAV, decodeWAVPCM, audioPCMValue, extractAudioBits, scanAudioLSB, waveform, fft, spectrogram,
-    morseDecode, parseID3v2, parseID3v1, decodeID3Text, auditWAV, auditMP3
+    morseDecode, dtmfDecode, parseID3v2, parseID3v1, decodeID3Text, auditWAV, auditMP3
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

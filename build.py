@@ -673,6 +673,25 @@ def _embed_bits_lsb(vals, msg, channel=0, channels=1, offset=0):
     return out
 
 
+def fixture_dtmf_wav():
+    import math
+    sr = 8000
+    freqs = {
+        "1": (697, 1209), "2": (697, 1336), "3": (697, 1477), "A": (697, 1633),
+        "4": (770, 1209), "5": (770, 1336), "6": (770, 1477), "B": (770, 1633),
+        "7": (852, 1209), "8": (852, 1336), "9": (852, 1477), "C": (852, 1633),
+        "*": (941, 1209), "0": (941, 1336), "#": (941, 1477), "D": (941, 1633),
+    }
+    vals = []
+    for d in "1800#*5":
+        lo, hi = freqs[d]
+        for i in range(int(sr * 0.06)):
+            vals.append(int(8000 * (math.sin(2 * math.pi * lo * i / sr) + math.sin(2 * math.pi * hi * i / sr)) / 2))
+        for i in range(int(sr * 0.04)):
+            vals.append(0)
+    return make_wav(vals, 1, 16, sr)
+
+
 def fixture_wav_lsb():
     import math
     n = 1600
@@ -1245,6 +1264,7 @@ FIXTURES = [
     ("iend_trailer.png", fixture_iend_trailer, ["IEND 之后还有数据", "flag{iend_trailer}"]),
     ("nested_png.png", fixture_nested_png, []),
     ("wav_lsb.wav", fixture_wav_lsb, ["音频 LSB 候选", "flag{wav_lsb}"]),
+    ("dtmf.wav", fixture_dtmf_wav, ["DTMF", "1800#*5"]),
     ("wav_extensible.wav", fixture_wav_extensible, ["WAVE_FORMAT_EXTENSIBLE", "flag{wav_extensible}"]),
     ("wav_stereo_lsb.wav", fixture_wav_stereo_lsb, ["音频 LSB 候选", "flag{wav_stereo}"]),
     ("wav_trailer.wav", fixture_wav_trailer, ["RIFF 结束之后还有数据", "flag{wav_trailer}"]),
