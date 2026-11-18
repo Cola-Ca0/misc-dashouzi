@@ -9405,6 +9405,9 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
 
   function analyze(input, name, opts) {
     const o = Object.assign({ maxDepth: 3, deep: false, maxFiles: 64, maxScanPixels: 6000000, top: 12 }, opts || {});
+    // 模板随任务固化：mid-run 改设置不会污染已经派出的这一轮（Worker 与主线程降级路径同规则）
+    const prevFlagFormat = MDZ.getFlagFormat();
+    if (o.flagFormat) MDZ.setFlagFormat(o.flagFormat);
     const bytes = toU8(input);
     const result = {
       name: name || 'input',
@@ -9698,6 +9701,8 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     result.stats.findings = result.findings.length;
     result.stats.artifacts = result.artifacts.length;
     result.stats.elapsed = Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0));
+    result.flagFormat = o.flagFormat || prevFlagFormat;
+    MDZ.setFlagFormat(prevFlagFormat);
     return result;
   }
 
@@ -9705,6 +9710,9 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
   // 自定义格式（#...# 之类）在噪声里容易误中：只认"我们自己解出来的上下文"
   const CUSTOM_FLAG_TRUSTED = new Set(['lsb', 'text_chunk', 'meta_decode', 'chunk_name', 'crc_ascii', 'trailer', 'filename', 'palette_flag', 'zip_entry', 'second_stream', 'independent_idat', 'unused_data']);
   function flags(result) {
+    // 用这一轮结果自己的模板算，而不是当前侧栏设置
+    const prevFlagFormat = MDZ.getFlagFormat();
+    if (result && result.flagFormat) MDZ.setFlagFormat(result.flagFormat);
     const out = new Set();
     const custom = MDZ.isFlagFormatCustom();
     for (const f of result.findings) {
@@ -9722,6 +9730,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     };
     for (const a of result.artifacts || []) scan(a.bytes);
     for (const f of result.findings) if (f.payload) scan(f.payload.bytes);
+    MDZ.setFlagFormat(prevFlagFormat);
     return Array.from(out);
   }
 
@@ -11091,8 +11100,14 @@ catch (e) {
         worker = null;
         globalThis.MDZ_DIAG = globalThis.MDZ_DIAG || {};
         globalThis.MDZ_DIAG.worker = 'dead';
-        for (const [, job] of jobs) job.reject(new Error('Worker 异常退出'));
+        // Worker 异步建不起来（脚本加载/启动失败）时，在飞的任务当场用主线程补跑，
+        // 不要让整批跟着失败
+        const pending = Array.from(jobs.values());
         jobs.clear();
+        for (const job of pending) {
+          try { job.resolve(M.analyze(job.bytes, job.name, job.opts)); }
+          catch (e) { job.reject(e); }
+        }
       };
     } catch (e) {
       workerDead = true;
@@ -11136,18 +11151,20 @@ catch (e) {
 
   function analyzeAsync(bytes, name, opts) {
     const w = ensureWorker();
+    // 模板在派发时固化：之后改设置不会串到这一轮，Worker 和主线程路径拿到同一份
+    const o = Object.assign({}, opts, { flagFormat: M.getFlagFormat() });
     // 给冒烟测试看的：Worker 到底有没有真的跑起来
     globalThis.MDZ_DIAG = globalThis.MDZ_DIAG || {};
     globalThis.MDZ_DIAG.worker = w ? 'on' : 'off';
-    if (!w) return Promise.resolve(M.analyze(bytes, name, opts));
+    if (!w) return Promise.resolve(M.analyze(bytes, name, o));
     return new Promise((resolve, reject) => {
       const id = ++jobSeq;
-      jobs.set(id, { resolve, reject });
+      jobs.set(id, { resolve, reject, bytes, name, opts: o });
       try {
-        w.postMessage({ id, bytes, name, opts });
+        w.postMessage({ id, bytes, name, opts: o });
       } catch (e) {
         jobs.delete(id);
-        resolve(M.analyze(bytes, name, opts));    // 传不过去就退回主线程
+        resolve(M.analyze(bytes, name, o));    // 传不过去就退回主线程
       }
     }).then((r) => {
       // Worker 回来后 pcm.value 已被剔掉，这里补回来（和主线程同一套规则）

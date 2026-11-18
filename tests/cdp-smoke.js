@@ -718,6 +718,35 @@ function zeroBmp() {
     }
     extra.batchScroll = { before: scrollBefore, ...scroll };
 
+    // Worker 异步建不起来（启动失败）时，在飞的任务要用主线程补跑，不能整批失败。
+    await send('Page.navigate', { url: PAGE }, S);
+    if (!await waitFor(`document.querySelector('#selftest') && document.querySelector('#selftest').textContent.includes('自检')`)) {
+      throw new Error('重载后自检未完成');
+    }
+    await ev(`(() => {
+      const Real = window.Worker;
+      window.Worker = function (url) {
+        const w = new Real(url);
+        const post = w.postMessage.bind(w);
+        let failed = false;
+        w.postMessage = function (job) {
+          // 第一次派发后制造异步失败，模拟 Worker 脚本加载/启动失败
+          if (!failed) { failed = true; setTimeout(() => w.onerror && w.onerror(new Error('worker bootstrap failed')), 0); return; }
+          post(job);
+        };
+        return w;
+      };
+    })()`);
+    const root2 = (await send('DOM.getDocument', {}, S)).root;
+    const { nodeId: nodeId2 } = await send('DOM.querySelector', { nodeId: root2.nodeId, selector: '#file' }, S);
+    await send('DOM.setFileInputFiles', { files: [FIX], nodeId: nodeId2 }, S);
+    if (!await waitFor(`document.querySelector('#status').textContent.startsWith('完成：')`, 30000)) {
+      throw new Error('Worker 异步失败后未补跑：' + await ev(`document.querySelector('#status').textContent`));
+    }
+    const fallback = await ev(`({ worker: (window.MDZ_DIAG || {}).worker || 'none', findings: document.querySelectorAll('.finding').length })`);
+    if (fallback.worker !== 'dead' || fallback.findings < 1) throw new Error('降级补跑异常：' + JSON.stringify(fallback));
+    extra.workerFallback = fallback;
+
     console.log('PASS cdp-smoke:', JSON.stringify(Object.assign({}, diag, { selftest: diagSelf, zoom, batch: bd, active, diff: diffDiag, diffMode, zero: zd, cap: cd, media, extra })));
 
   } finally {

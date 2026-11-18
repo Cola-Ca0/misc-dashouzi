@@ -1104,5 +1104,22 @@ console.log('\n== 节点编辑器 / CRC 工具 / JPEG 熵自检 / 自定义宽�
   const gp2 = M.parseGIF(ged.bytes);
   check('GIF 帧高/画布高度可改', !ged.error && gp2.frames[0].height === f0.height + 3 && gp2.lsd.height >= f0.height + 3, ged.error || JSON.stringify({ h: gp2.frames[0].height, lsd: gp2.lsd.height }));
 }
+console.log('\n== 模板随任务固化 ==');
+{
+  M.setFlagFormat('flag{}');
+  // flags() 只认这一轮结果自己的模板，不受当前侧栏设置影响
+  const fakeCustom = { findings: [{ type: 'lsb', preview: '#abcde#', actual: 'flag{zzz}', detail: '', title: '' }], artifacts: [], flagFormat: '#{}#' };
+  const gotCustom = M.flags(fakeCustom);
+  check('flags 用结果自带模板', gotCustom.indexOf('#abcde#') >= 0 && gotCustom.indexOf('flag{zzz}') < 0, JSON.stringify(gotCustom));
+  check('flags 不改全局模板', M.getFlagFormat() === 'flag{}', M.getFlagFormat());
+
+  const zc = fs.readFileSync(path.join(__dirname, 'fixtures', 'zip_comment.zip'));
+  const a = M.analyze(zc, 'zip_comment.zip', { flagFormat: 'flag{}' });
+  const b = M.analyze(zc, 'zip_comment.zip', { flagFormat: '#{}#' });
+  check('analyze 记录本轮模板', a.flagFormat === 'flag{}' && b.flagFormat === '#{}#', a.flagFormat + ' / ' + b.flagFormat);
+  check('analyze 跑完恢复全局模板', M.getFlagFormat() === 'flag{}', M.getFlagFormat());
+  check('默认模板认出 ZIP 注释 flag', M.flags(a).indexOf('flag{zip_comment}') >= 0, JSON.stringify(M.flags(a)));
+  check('自定义模板不误认 flag{}', M.flags(b).indexOf('flag{zip_comment}') < 0, JSON.stringify(M.flags(b)));
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }

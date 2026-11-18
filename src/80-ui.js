@@ -337,8 +337,14 @@
         worker = null;
         globalThis.MDZ_DIAG = globalThis.MDZ_DIAG || {};
         globalThis.MDZ_DIAG.worker = 'dead';
-        for (const [, job] of jobs) job.reject(new Error('Worker 异常退出'));
+        // Worker 异步建不起来（脚本加载/启动失败）时，在飞的任务当场用主线程补跑，
+        // 不要让整批跟着失败
+        const pending = Array.from(jobs.values());
         jobs.clear();
+        for (const job of pending) {
+          try { job.resolve(M.analyze(job.bytes, job.name, job.opts)); }
+          catch (e) { job.reject(e); }
+        }
       };
     } catch (e) {
       workerDead = true;
@@ -382,18 +388,20 @@
 
   function analyzeAsync(bytes, name, opts) {
     const w = ensureWorker();
+    // 模板在派发时固化：之后改设置不会串到这一轮，Worker 和主线程路径拿到同一份
+    const o = Object.assign({}, opts, { flagFormat: M.getFlagFormat() });
     // 给冒烟测试看的：Worker 到底有没有真的跑起来
     globalThis.MDZ_DIAG = globalThis.MDZ_DIAG || {};
     globalThis.MDZ_DIAG.worker = w ? 'on' : 'off';
-    if (!w) return Promise.resolve(M.analyze(bytes, name, opts));
+    if (!w) return Promise.resolve(M.analyze(bytes, name, o));
     return new Promise((resolve, reject) => {
       const id = ++jobSeq;
-      jobs.set(id, { resolve, reject });
+      jobs.set(id, { resolve, reject, bytes, name, opts: o });
       try {
-        w.postMessage({ id, bytes, name, opts });
+        w.postMessage({ id, bytes, name, opts: o });
       } catch (e) {
         jobs.delete(id);
-        resolve(M.analyze(bytes, name, opts));    // 传不过去就退回主线程
+        resolve(M.analyze(bytes, name, o));    // 传不过去就退回主线程
       }
     }).then((r) => {
       // Worker 回来后 pcm.value 已被剔掉，这里补回来（和主线程同一套规则）

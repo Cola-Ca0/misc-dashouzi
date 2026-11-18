@@ -350,6 +350,9 @@
 
   function analyze(input, name, opts) {
     const o = Object.assign({ maxDepth: 3, deep: false, maxFiles: 64, maxScanPixels: 6000000, top: 12 }, opts || {});
+    // 模板随任务固化：mid-run 改设置不会污染已经派出的这一轮（Worker 与主线程降级路径同规则）
+    const prevFlagFormat = MDZ.getFlagFormat();
+    if (o.flagFormat) MDZ.setFlagFormat(o.flagFormat);
     const bytes = toU8(input);
     const result = {
       name: name || 'input',
@@ -643,6 +646,8 @@
     result.stats.findings = result.findings.length;
     result.stats.artifacts = result.artifacts.length;
     result.stats.elapsed = Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0));
+    result.flagFormat = o.flagFormat || prevFlagFormat;
+    MDZ.setFlagFormat(prevFlagFormat);
     return result;
   }
 
@@ -650,6 +655,9 @@
   // 自定义格式（#...# 之类）在噪声里容易误中：只认"我们自己解出来的上下文"
   const CUSTOM_FLAG_TRUSTED = new Set(['lsb', 'text_chunk', 'meta_decode', 'chunk_name', 'crc_ascii', 'trailer', 'filename', 'palette_flag', 'zip_entry', 'second_stream', 'independent_idat', 'unused_data']);
   function flags(result) {
+    // 用这一轮结果自己的模板算，而不是当前侧栏设置
+    const prevFlagFormat = MDZ.getFlagFormat();
+    if (result && result.flagFormat) MDZ.setFlagFormat(result.flagFormat);
     const out = new Set();
     const custom = MDZ.isFlagFormatCustom();
     for (const f of result.findings) {
@@ -667,6 +675,7 @@
     };
     for (const a of result.artifacts || []) scan(a.bytes);
     for (const f of result.findings) if (f.payload) scan(f.payload.bytes);
+    MDZ.setFlagFormat(prevFlagFormat);
     return Array.from(out);
   }
 
