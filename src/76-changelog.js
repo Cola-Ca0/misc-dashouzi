@@ -49,6 +49,8 @@
     }
   ];
 
+  // 未发布修复
+  // - 修复 v1.0.0 遗留缺陷：批量导出速报或 WP 框架时抛出 TypeError。
   const CHANGELOG = [
     {
       version: '1.0.0', date: '2026-11-10', title: '首个正式版',

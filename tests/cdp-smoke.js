@@ -490,6 +490,143 @@ function zeroBmp() {
       extra.challenge = ch;
     }
 
+    // 单文件在派发前取消，重新开始后只有新一轮可以提交任务。
+    await ev(`(() => {
+      window.analysisTestJobs = [];
+      const post = Worker.prototype.postMessage;
+      window.restoreAnalysisTestWorker = () => { Worker.prototype.postMessage = post; };
+      Worker.prototype.postMessage = function (job, ...args) {
+        analysisTestJobs.push({ name: job.name, maxScanPixels: job.opts.maxScanPixels });
+        if (job.name !== window.analysisTestHold) return post.call(this, job, ...args);
+      };
+      const cancel = document.querySelector('#cancel');
+      const observer = new MutationObserver(() => {
+        if (cancel.style.display === 'none') return;
+        observer.disconnect();
+        cancel.click();
+      });
+      observer.observe(cancel, { attributes: true, attributeFilter: ['style'] });
+    })()`);
+    await send('DOM.setFileInputFiles', { files: [FIX], nodeId }, S);
+    if (!await waitFor(`document.querySelector('#status').textContent === '已取消'`)) throw new Error('单文件提前取消未生效');
+    await ev(`document.querySelector('#analyze').click()`);
+    if (!await waitFor(`document.querySelector('#status').textContent.startsWith('完成：')`)) throw new Error('单文件取消后无法重跑');
+    const singleJobs = await ev('analysisTestJobs.length');
+    if (singleJobs !== 1) throw new Error('单文件取消后仍派发任务：' + singleJobs);
+
+    // 阻住第二个任务的 Worker 回包，验证批量取消只保留已完成结果。
+    await ev(`analysisTestJobs.length = 0; window.analysisTestHold = 'f01.txt';`);
+    await send('DOM.setFileInputFiles', { files: capFiles.slice(0, 50), nodeId }, S);
+    if (!await waitFor(`analysisTestJobs.some(job => job.name === 'f01.txt')
+      && document.querySelectorAll('.batch-row.done').length === 1`)) throw new Error('批量取消探针未到达第二项');
+    if (!await ev(`getComputedStyle(document.querySelector('#cancel')).display !== 'none'`)) throw new Error('批量中未显示取消按钮');
+    await ev(`document.querySelector('#cancel').click()`);
+    const stopped = await ev(`(() => {
+      const completed = document.querySelectorAll('.batch-row.done');
+      const result = {
+        status: document.querySelector('#status').textContent,
+        completed: completed.length,
+        canceled: [...document.querySelectorAll('.batch-row .bst')].filter(el => el.textContent === '已取消').length,
+        submitted: analysisTestJobs.length,
+        restart: !document.querySelector('#analyze').disabled,
+        exportable: !document.querySelector('#report').disabled
+      };
+      if (completed[0]) completed[0].click();
+      result.viewable = document.querySelector('#result h2')?.textContent.includes('f00.txt');
+      delete window.analysisTestHold;
+      return result;
+    })()`);
+    if (stopped.status !== '已取消' || stopped.completed !== 1 || stopped.canceled !== 49
+        || stopped.submitted !== 2 || !stopped.restart || !stopped.exportable || !stopped.viewable) {
+      throw new Error('批量取消状态异常：' + JSON.stringify(stopped));
+    }
+    extra.cancel = { singleJobs, ...stopped };
+
+    // 改像素上限必须重算整个批量，详情和实际导出的报告都读这次结果。
+    const settingsFiles = ['second_stream.png', 'deep_lsb.png'].map(f => path.join(ROOT, 'tests', 'fixtures', f));
+    await ev(`(() => {
+      const select = document.querySelector('#maxpx');
+      window.analysisTestDefaultLimit = select.value;
+      select.add(new Option('测试用像素上限', '1'));
+      window.changeAnalysisTestLimit = (value, notify = true) => {
+        select.value = value;
+        if (notify) select.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+    })()`);
+    await send('DOM.setFileInputFiles', { files: settingsFiles, nodeId }, S);
+    if (!await waitFor(`document.querySelector('#status').textContent.startsWith('批量完成：2 个文件')`)) throw new Error('参数测试批量初次分析未完成');
+    await ev(`document.querySelector('[data-batch="1"]').click(); analysisTestJobs.length = 0; changeAnalysisTestLimit('1');`);
+    if (!await waitFor(`analysisTestJobs.length > 0 && !document.querySelector('#analyze').disabled`)) throw new Error('批量参数变更没有启动重算');
+    const settingsJobs = await ev('analysisTestJobs');
+    if (settingsJobs.length !== settingsFiles.length
+        || settingsJobs.some((job, i) => job.name !== path.basename(settingsFiles[i]) || job.maxScanPixels !== 1)) {
+      throw new Error('批量参数变更只更新了部分任务：' + JSON.stringify(settingsJobs));
+    }
+    const reports = await ev(`(async () => {
+      for (const row of document.querySelectorAll('.batch-row.done')) {
+        // 切换行会刷新列表，按编号取当前的按钮。
+        document.querySelector('[data-batch="' + row.dataset.batch + '"]').click();
+        if (!document.querySelector('#result').textContent.includes('跳过 LSB 扫描')) throw new Error('批量详情仍显示旧参数结果');
+      }
+      const select = document.querySelector('#report-tpl');
+      const previousTemplate = select.value;
+      const createURL = URL.createObjectURL;
+      const click = HTMLAnchorElement.prototype.click;
+      let markdown;
+      try {
+        URL.createObjectURL = function (blob) {
+          if (blob.type === 'text/markdown') markdown = blob;
+          return createURL.call(this, blob);
+        };
+        HTMLAnchorElement.prototype.click = function () {};
+        const exports = {};
+        for (const template of ['brief', 'wp']) {
+          select.value = template;
+          markdown = null;
+          document.querySelector('#report').click();
+          exports[template] = markdown ? await markdown.text() : '';
+        }
+        return exports;
+      } finally {
+        HTMLAnchorElement.prototype.click = click;
+        URL.createObjectURL = createURL;
+        select.value = previousTemplate;
+      }
+    })()`);
+    const reportCounts = {};
+    for (const { template, title, suffix } of [
+      { template: 'brief', title: '速报', suffix: ' — misc 速报' },
+      { template: 'wp', title: 'WP 框架', suffix: '' }
+    ]) {
+      const report = reports[template];
+      const sections = report.split('\n\n---\n\n');
+      reportCounts[template] = report.startsWith(`# misc大手子 批量报告（${title}）\n`)
+        ? settingsFiles.filter(file => sections.some(section =>
+          section.startsWith(`# ${path.basename(file)}${suffix}\n`)
+          && section.includes('跳过 LSB 扫描')
+          && section.includes('像素数超过上限 1；'))).length
+        : 0;
+    }
+    if (Object.values(reportCounts).some(count => count !== settingsFiles.length)) {
+      throw new Error('批量报告没有导出两项的新参数结果：' + JSON.stringify(reportCounts));
+    }
+
+    // 单文件计算期间改参数，旧任务尚无结果时也要能重算。
+    await ev(`changeAnalysisTestLimit(analysisTestDefaultLimit, false);
+      analysisTestJobs.length = 0; window.analysisTestHold = 'deep_lsb.png';`);
+    await send('DOM.setFileInputFiles', { files: [settingsFiles[1]], nodeId }, S);
+    if (!await waitFor(`analysisTestJobs.length === 1`)) throw new Error('单文件参数测试没有进入分析');
+    await ev(`delete window.analysisTestHold; changeAnalysisTestLimit('1');`);
+    if (!await waitFor(`document.querySelector('#status').textContent.startsWith('完成：')
+      && document.querySelector('#result').textContent.includes('跳过 LSB 扫描')`)) throw new Error('单文件分析中改参数未重算');
+    const singleSettings = await ev('analysisTestJobs.map(job => job.maxScanPixels)');
+    if (singleSettings.length !== 2 || singleSettings[0] <= 1 || singleSettings[1] !== 1) {
+      throw new Error('单文件参数未更新：' + JSON.stringify(singleSettings));
+    }
+    await ev(`changeAnalysisTestLimit(analysisTestDefaultLimit, false);
+      document.querySelector('#maxpx option[value="1"]').remove(); restoreAnalysisTestWorker();`);
+    extra.settings = { batch: settingsJobs.length, single: singleSettings, reports: reportCounts };
+
     console.log('PASS cdp-smoke:', JSON.stringify(Object.assign({}, diag, { selftest: diagSelf, zoom, batch: bd, active, diff: diffDiag, diffMode, zero: zd, cap: cd, media, extra })));
 
   } finally {

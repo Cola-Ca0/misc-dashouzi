@@ -223,7 +223,7 @@
     const list = Array.from(files || []);
     if (!list.length) return;
     const my = ++loadSeq;
-    analyzeSeq++;                           // 取消还在跑的旧分析
+    stopAnalysisJobs();
     renderSeq++;                            // 旧结果区的事件绑带立刻失效
     const use = list.slice(0, MAX_BATCH);
     state.ignored = list.length - use.length;
@@ -232,7 +232,7 @@
     state.result = null;
     state.bytes = null;
     state.file = null;
-    state.busy = false;
+    setAnalysisRunning(false);
     state.companion.last = null;
     state.companion.error = '';
     state.layer = 'all';
@@ -347,16 +347,36 @@
     return worker;
   }
 
-  function cancelAnalysis() {
+  function stopAnalysisJobs() {
     analyzeSeq++;
-    if (worker) { try { worker.terminate(); } catch (_) { /* ignore */ } worker = null; }
-    for (const [, job] of jobs) job.reject(new Error('已取消'));
+    if (worker && jobs.size) {
+      try { worker.terminate(); } catch (_) { /* ignore */ }
+      worker = null;
+    }
+    for (const job of jobs.values()) job.reject(new Error('已取消'));
     jobs.clear();
-    state.busy = false;
-    const btn = $('#analyze'); if (btn) btn.disabled = !state.bytes;
-    const c = $('#cancel'); if (c) c.style.display = 'none';
-    const empty = $('#empty');
-    if (empty) { empty.style.display = ''; empty.innerHTML = '<div class="g">◌</div><div>已取消</div><div style="font-size:12px">改完设置再点「开始分析」</div>'; }
+  }
+
+  function setAnalysisRunning(running) {
+    state.busy = running;
+    $('#analyze').disabled = running || !(state.bytes || state.items.length > 1);
+    const cancel = $('#cancel');
+    if (cancel) cancel.style.display = running ? '' : 'none';
+  }
+
+  function cancelAnalysis() {
+    if (!state.busy) return;
+    stopAnalysisJobs();
+    setAnalysisRunning(false);
+    if (state.items.length > 1) {
+      for (const item of state.items) {
+        if (!item.result && item.status !== '失败') item.status = '已取消';
+      }
+      renderBatch();
+    }
+    if (!state.result) {
+      showEmpty('<div class="g">◌</div><div>已取消</div><div style="font-size:12px">改完设置再点「开始分析」</div>');
+    }
     setStatus('已取消');
   }
 
@@ -402,18 +422,24 @@
     runAnalysis();
   }
 
+  function runCurrentAnalysis() {
+    if (state.items.length > 1) runBatchAnalysis();
+    else runAnalysis();
+  }
+
   function runAnalysis() {
     if (!state.bytes) return;
     applyFlagFormat();
     const my = ++analyzeSeq;
+    const bytes = state.bytes;
+    const name = state.file ? state.file.name : 'input';
     const deep = $('#deep').checked;
     const maxScanPixels = parseInt($('#maxpx').value, 10) || 6000000;
-    state.busy = true;
+    setAnalysisRunning(true);
     state.result = null;
     // 新文件重置层过滤，否则会出现“芯片选着 L4、结果全是 L1→列表空白”
     state.layer = 'all';
     $$('#filters .chip').forEach(x => x.classList.toggle('on', x.dataset.layer === 'all'));
-    $('#analyze').disabled = true;
     $('#report').disabled = true;
     $('#filters').style.display = 'none';
     const st = $('#selftest'); if (st) st.style.display = 'none';
@@ -425,11 +451,11 @@
       empty.innerHTML = '<div class="g">◌</div><div><span class="spinner"></span>分析中…</div><div style="font-size:12px">' + esc(state.file ? state.file.name : '') + '</div>';
     }
     setStatus('<span class="spinner"></span>分析中…');
-    const cbtn = $('#cancel'); if (cbtn) cbtn.style.display = '';
     $('#content').scrollTop = 0;
     setTimeout(async () => {
+      if (my !== analyzeSeq) return;
       try {
-        const r = await analyzeAsync(state.bytes, state.file ? state.file.name : 'input', { deep, maxScanPixels });
+        const r = await analyzeAsync(bytes, name, { deep, maxScanPixels });
         if (my !== analyzeSeq) return;
         state.result = r;
         if (state.items.length === 1) { state.items[0].result = r; state.items[0].status = '完成'; state.items[0].flagCount = M.flags(r).length; }
@@ -444,11 +470,7 @@
         setStatus('<span style="color:var(--danger)">分析失败：' + esc(e && e.message || e) + '</span>');
         if (empty) empty.innerHTML = '<div class="g">⚠</div><div>分析失败</div><div style="font-size:12px">' + esc(e && e.message || e) + '</div>';
       } finally {
-        if (my === analyzeSeq) {
-          state.busy = false;
-          $('#analyze').disabled = false;
-          const c = $('#cancel'); if (c) c.style.display = 'none';
-        }
+        if (my === analyzeSeq) setAnalysisRunning(false);
       }
     }, 30);
   }
@@ -461,12 +483,11 @@
     const my = ++analyzeSeq;
     const deep = $('#deep').checked;
     const maxScanPixels = parseInt($('#maxpx').value, 10) || 6000000;
-    state.busy = true;
+    setAnalysisRunning(true);
     state.result = null;
     state.activeIdx = -1;
     state.layer = 'all';
     $$('#filters .chip').forEach(x => x.classList.toggle('on', x.dataset.layer === 'all'));
-    $('#analyze').disabled = true;
     $('#report').disabled = true;
     $('#filters').style.display = 'none';
     $('#result').style.display = 'none';
@@ -504,19 +525,20 @@
       await new Promise(r => setTimeout(r, 12));
       if (my !== analyzeSeq) return;
       try {
-        it.result = await analyzeAsync(it.bytes, it.name, { deep, maxScanPixels });
+        const result = await analyzeAsync(it.bytes, it.name, { deep, maxScanPixels });
+        if (my !== analyzeSeq) return;
+        it.result = result;
         it.flagCount = M.flags(it.result).length;
         it.status = '完成';
       } catch (e) {
+        if (my !== analyzeSeq) return;
         it.status = '失败'; it.error = String(e && e.message || e);
       }
-      if (my !== analyzeSeq) return;
       renderBatch();
       if (!firstShown && it.result) { firstShown = true; activate(i); }
     }
     if (my !== analyzeSeq) return;
-    state.busy = false;
-    $('#analyze').disabled = false;
+    setAnalysisRunning(false);
     const done = state.items.filter(x => x.result);
     const failed = state.items.filter(x => x.status === '失败').length;
     const total = done.reduce((a, x) => a + x.result.findings.length, 0);
@@ -2490,7 +2512,11 @@
     $('#ver').textContent = 'v' + (M.VERSION || '0.1.0');
     bindDrop();
     // 改了「深度扫描 / 像素上限」要重跑，否则界面还是上一轮的结论
-    const rerun = () => { if (state.bytes && state.items.some(x => x.result) && !state.busy) runAnalysis(); };
+    const rerun = () => {
+      if (state.busy) stopAnalysisJobs();
+      else if (!state.result && !state.items.some(item => item.result)) return;
+      runCurrentAnalysis();
+    };
     if ($('#deep')) $('#deep').addEventListener('change', rerun);
     if ($('#maxpx')) $('#maxpx').addEventListener('change', rerun);
     // 文件拖到页面别处时别让浏览器直接导航走（会把当前会话整个清掉）
@@ -2500,9 +2526,7 @@
     bindViews();
     bindNodeEditor();
     $('#analyze').addEventListener('click', () => {
-      if (state.busy) return;
-      if (state.items.length > 1) runBatchAnalysis();
-      else runAnalysis();
+      if (!state.busy) runCurrentAnalysis();
     });
     if ($('#cancel')) $('#cancel').addEventListener('click', cancelAnalysis);
     // flag 格式：恢复上次选择，改动即生效
@@ -2528,7 +2552,7 @@
         const md = tpl === 'full'
           ? M.buildBatchReport(done.map(x => x.result))
           : ['# misc大手子 批量报告（' + (tpl === 'brief' ? '速报' : 'WP 框架') + '）', '']
-              .concat(done.map(r => M.buildReport(r, { template: tpl })))
+              .concat(done.map(x => M.buildReport(x.result, { template: tpl })))
               .join('\n\n---\n\n');
         dl('batch-misc-report.md', new TextEncoder().encode(md), 'text/markdown');
         return;
