@@ -329,6 +329,11 @@
     if (format === 'unknown' && b.length >= 4 && b[0] === 0x42 && b[1] === 0x5A && b[2] === 0x68 && b[3] >= 0x31 && b[3] <= 0x39) {
       format = 'BZIP2'; mime = 'application/x-bzip2'; label = 'BZIP2';
     }
+    // Git packfile：'PACK' + 版本 2/3
+    if (format === 'unknown' && b.length >= 12 && b[0] === 0x50 && b[1] === 0x41 && b[2] === 0x43 && b[3] === 0x4B) {
+      const v = ((b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7]) >>> 0;
+      if (v === 2 || v === 3) { format = 'GIT'; mime = 'application/x-git-pack'; label = 'Git pack'; }
+    }
     // MP4/MOV：偏移 4 的 box 类型是 'ftyp'
     if (format === 'unknown' && b.length >= 12 && ascii(b.subarray(4, 8), 4) === 'ftyp') {
       format = 'MP4'; mime = 'video/mp4'; label = 'MP4';

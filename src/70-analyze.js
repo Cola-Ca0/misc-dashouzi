@@ -199,10 +199,15 @@
       case 'PCAPNG': return MDZ.auditPCAP(bytes, name, opts);
       case 'TTF': case 'OTF': case 'WOFF': case 'WOFF2': return MDZ.auditFont(bytes);
       case 'SQLITE': return MDZ.auditSQLite(bytes);
+      case 'GIT': return MDZ.auditGitPack(bytes, name);
       case 'ELF': return MDZ.auditELF(bytes);
       case 'PE': return MDZ.auditPE(bytes);
       case 'TEXT': return auditGeneric(bytes, name);
-      default: return auditGeneric(bytes, name);
+      default: {
+        // 松散 Git 对象没有魔数，只有 zlib 解压后的 "<type> <size>\0" 头
+        const g = MDZ.auditGitObject ? MDZ.auditGitObject(bytes, name) : null;
+        return g || auditGeneric(bytes, name);
+      }
     }
   }
 

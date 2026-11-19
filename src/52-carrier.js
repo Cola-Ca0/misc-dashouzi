@@ -98,6 +98,136 @@
   }
 
   // ---------- SQLite ----------
+  // 只看文件头 + strings 会漏掉 UTF-16 库和溢出页里的值，所以这里按 B 树叶页走一遍记录格式。
+  function sqliteVarint(b, o) {
+    let v = 0;
+    for (let i = 0; i < 9; i++) {
+      const c = b[o + i];
+      if (c === undefined) return null;
+      if (i === 8) return { value: v * 256 + c, next: o + 9 };
+      v = v * 128 + (c & 0x7f);
+      if (!(c & 0x80)) return { value: v, next: o + i + 1 };
+    }
+    return null;
+  }
+
+  function sqliteUtf16be(bytes) {
+    let s = '';
+    for (let i = 0; i + 1 < bytes.length; i += 2) s += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
+    return s;
+  }
+
+  function sqliteLocalLen(payloadLen, usable) {
+    const maxLocal = usable - 35;
+    const minLocal = Math.floor((usable - 12) * 32 / 255) - 23;
+    if (payloadLen <= maxLocal) return payloadLen;
+    const k = minLocal + ((payloadLen - minLocal) % (usable - 4));
+    return k <= maxLocal ? k : minLocal;
+  }
+
+  // 记录格式：header 长度 varint + serial type 列表 + body；只取 TEXT 列
+  function sqliteRecordTexts(payload, enc) {
+    const out = [];
+    const h = sqliteVarint(payload, 0);
+    if (!h) return out;
+    const headerEnd = Math.min(h.value, payload.length);
+    let p = h.next;
+    const types = [];
+    while (p < headerEnd) {
+      const t = sqliteVarint(payload, p);
+      if (!t) break;
+      types.push(t.value);
+      p = t.next;
+    }
+    let body = headerEnd;
+    for (const t of types) {
+      if (t >= 12) {
+        const len = (t - 12) >> 1;
+        if (body + len > payload.length) break;
+        if (t & 1) {
+          let s;
+          if (enc === 2) s = MDZ.utf16le(payload.subarray(body, body + len));
+          else if (enc === 3) s = sqliteUtf16be(payload.subarray(body, body + len));
+          else s = MDZ.utf8(payload.subarray(body, body + len));
+          if (s) out.push(s);
+        }
+        body += len;
+        continue;
+      }
+      const intLen = t >= 1 && t <= 7 ? [0, 1, 2, 3, 4, 6, 8, 8][t] : 0;
+      body += intLen;
+    }
+    return out;
+  }
+
+  function sqliteScanRows(b, pageSize, enc, usable) {
+    const pages = Math.min(Math.floor(b.length / pageSize), 200000);
+    const res = { leaves: 0, rows: 0, texts: [], flags: [] };
+    const overflows = new Set();
+    for (let pg = 1; pg <= pages; pg++) {
+      const base = (pg - 1) * pageSize;
+      const hOff = base + (pg === 1 ? 100 : 0);
+      if (hOff + 8 > b.length) break;
+      const type = b[hOff];
+      if (type !== 0x0D && type !== 0x0A) continue;
+      res.leaves++;
+      const nCells = rd16(b, hOff + 3);
+      const idxLeaf = type === 0x0A;
+      for (let i = 0; i < nCells && i < 8192; i++) {
+        const ptr = hOff + 8 + i * 2;
+        if (ptr + 2 > b.length) break;
+        const cellOff = base + rd16(b, ptr);
+        if (cellOff >= b.length) continue;
+        const pl = sqliteVarint(b, cellOff);
+        if (!pl || !(pl.value > 0) || pl.value > 16777216) continue;
+        let dataStart = pl.next;
+        if (!idxLeaf) {
+          const rowid = sqliteVarint(b, dataStart);
+          if (!rowid) continue;
+          dataStart = rowid.next;
+        }
+        const payloadLen = pl.value;
+        const local = sqliteLocalLen(payloadLen, usable);
+        if (dataStart + local > b.length) continue;
+        let payload;
+        if (payloadLen <= local) {
+          payload = b.subarray(dataStart, dataStart + payloadLen);
+        } else {
+          const parts = [b.subarray(dataStart, dataStart + local)];
+          let need = payloadLen - local;
+          let ovfl = rd32(b, dataStart + local);
+          let guard = 0;
+          while (ovfl && need > 0 && guard++ < 8192) {
+            const off = (ovfl - 1) * pageSize;
+            if (off + 4 > b.length) break;
+            overflows.add(ovfl);
+            const take = Math.min(need, usable - 4, b.length - off - 4);
+            if (take <= 0) break;
+            parts.push(b.subarray(off + 4, off + 4 + take));
+            need -= take;
+            ovfl = rd32(b, off);
+          }
+          const total = payloadLen - Math.max(0, need);
+          payload = new Uint8Array(total);
+          let o = 0;
+          for (const part of parts) { const n = Math.min(part.length, total - o); payload.set(part.subarray(0, n), o); o += n; if (o >= total) break; }
+        }
+        res.rows++;
+        const vals = sqliteRecordTexts(payload, enc);
+        for (const v of vals) {
+          if (res.texts.length >= 4000) break;
+          res.texts.push(v);
+          const fs = MDZ.flagFindAll(v);
+          for (const f of fs) if (res.flags.indexOf(f) < 0) res.flags.push(f);
+        }
+        if (res.texts.length >= 4000) break;
+      }
+      if (res.texts.length >= 4000) break;
+    }
+    res.overflowPages = overflows.size;
+    return res;
+  }
+
   function auditSQLite(bytes) {
     const b = toU8(bytes);
     const findings = [], artifacts = [];
@@ -125,6 +255,31 @@
     }
     const fm = MDZ.flagMatch(text.join('\n'));
     if (fm) findings.push(finding('L3', 'sqlite', `数据库里出现 ${fm}`, { confidence: 0.99, actual: fm, recipe: 'strings 扫整个库' }));
+    // 行级扫描：解 B 树叶页里的每条记录，溢出页也跟
+    if (pageSize >= 512 && pageSize <= 65536) {
+      const usable = pageSize - b[20];
+      const rows = sqliteScanRows(b, pageSize, enc, usable);
+      if (rows.leaves) {
+        findings.push(finding('L2', 'sqlite_rows', `逐行扫描：${rows.leaves} 个叶页 · ${rows.rows} 行 · ${rows.texts.length} 条文本${rows.overflowPages ? ' · ' + rows.overflowPages + ' 个溢出页' : ''}`, {
+          confidence: 0.8,
+          actual: rows.texts.slice(0, 6).map(t => t.length > 80 ? t.slice(0, 80) + '…' : t).join(' | '),
+          detail: '按 SQLite 记录格式（header + serial type）解出文本列；不依赖 strings，所以 UTF-16 库也能读。',
+          recipe: 'sqlite3 db "select * from 表名"；或看本工具导出的 sqlite-rows.txt'
+        }));
+        for (const f of rows.flags.slice(0, 10)) {
+          findings.push(finding('L3', 'sqlite_row_flag', `行数据里出现 ${f}`, {
+            confidence: 0.99, actual: f, recipe: '逐行扫文本列'
+          }));
+        }
+        if (rows.texts.length) {
+          const txt = rows.texts.join('\n').slice(0, 1 << 20);
+          const tb = typeof TextEncoder !== 'undefined'
+            ? new TextEncoder().encode(txt)
+            : Uint8Array.from(txt, c => c.charCodeAt(0) & 255);
+          artifacts.push(artifact('sqlite-rows.txt', tb, `SQLite 行文本 ${rows.texts.length} 条`));
+        }
+      }
+    }
     return { findings, artifacts };
   }
 
@@ -501,5 +656,185 @@
     return { findings, artifacts, image: null, ole: { major, sectorSize: S, streams: streams.map(s => ({ path: s.path, size: s.entry.size })) } };
   }
 
-  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE });
+  // ---------- Git 松散对象 / packfile ----------
+  // 松散对象 = zlib("<type> <size>\0" + 内容)；pack 里还要处理 OFS_DELTA。
+  function gitLooseObject(input) {
+    const b = toU8(input);
+    if (b.length < 8 || !MDZ.isZlibHeader(b, 0)) return null;
+    const z = MDZ.inflateZlib(b, 0, 64 * 1024 * 1024);
+    if (!z.out || !z.out.length) return null;
+    const nul = z.out.indexOf(0);
+    if (nul <= 0 || nul > 32) return null;
+    const head = ascii(z.out.subarray(0, nul), nul);
+    const m = head.match(/^(commit|tree|blob|tag) (\d+)$/);
+    if (!m) return null;
+    return { type: m[1], size: parseInt(m[2], 10), data: z.out.subarray(nul + 1), z };
+  }
+
+  function auditGitObject(input, name) {
+    const b = toU8(input);
+    const obj = gitLooseObject(b);
+    if (!obj) return null;
+    const findings = [], artifacts = [];
+    const text = MDZ.utf8(obj.data) || ascii(obj.data, Math.min(obj.data.length, 65536));
+    findings.push(finding('L1', 'git', `Git ${obj.type} 对象 · ${obj.size} 字节`, {
+      confidence: 0.95, offset: 0,
+      declared: `zlib 压缩 ${b.length} 字节`,
+      actual: `解出 ${obj.data.length} 字节明文`,
+      detail: '松散对象 = zlib("<type> <size>\\0" + 内容)，直接解开就是原始文件/提交信息。',
+      preview: text.slice(0, 400),
+      recipe: `python -c "import zlib;print(zlib.decompress(open('${(name || 'obj').replace(/'/g, '')}','rb').read()))"`
+    }));
+    for (const f of MDZ.flagFindAll(text).slice(0, 10)) {
+      findings.push(finding('L3', 'git_flag', `Git 对象里出现 ${f}`, {
+        confidence: 0.99, actual: f, preview: text.slice(0, 300)
+      }));
+    }
+    artifacts.push(artifact(`git-${obj.type}.bin`, obj.data, `Git ${obj.type} 解压内容`));
+    return { findings, artifacts, image: null };
+  }
+
+  function gitPackVarint(b, p) {
+    let c = b[p++];
+    if (c === undefined) return null;
+    let size = c & 0x0f;
+    const type = (c >> 4) & 7;
+    let shift = 4;
+    while (c & 0x80) {
+      c = b[p++];
+      if (c === undefined) return null;
+      size |= (c & 0x7f) << shift;
+      shift += 7;
+    }
+    return { type, size, next: p };
+  }
+
+  function gitDeltaApply(base, delta) {
+    let p = 0;
+    const readV = () => {
+      let v = 0, shift = 0, c;
+      do { c = delta[p++]; if (c === undefined) return -1; v |= (c & 0x7f) << shift; shift += 7; } while (c & 0x80);
+      return v;
+    };
+    const baseSize = readV(), resultSize = readV();
+    if (baseSize !== base.length || resultSize < 0 || resultSize > 64 * 1024 * 1024) return null;
+    const out = new Uint8Array(resultSize);
+    let o = 0;
+    while (p < delta.length && o < resultSize) {
+      const c = delta[p++];
+      if (c & 0x80) {
+        let off = 0, size = 0;
+        if (c & 1) off |= delta[p++];
+        if (c & 2) off |= delta[p++] << 8;
+        if (c & 4) off |= delta[p++] << 16;
+        if (c & 8) off |= delta[p++] << 24;
+        if (c & 16) size |= delta[p++];
+        if (c & 32) size |= delta[p++] << 8;
+        if (c & 64) size |= delta[p++] << 16;
+        if (size === 0) size = 0x10000;
+        if (off + size > base.length || o + size > out.length) return null;
+        out.set(base.subarray(off, off + size), o);
+        o += size;
+      } else {
+        if (c === 0) break;
+        if (p + c > delta.length || o + c > out.length) return null;
+        out.set(delta.subarray(p, p + c), o);
+        o += c; p += c;
+      }
+    }
+    return o === resultSize ? out : null;
+  }
+
+  function auditGitPack(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    if (b.length < 12) return { findings: [finding('L0', 'git_pack', 'pack 头不完整')], artifacts };
+    const version = rd32(b, 4), count = rd32(b, 8);
+    findings.push(finding('L1', 'git_pack', `Git packfile v${version} · ${count} 个对象`, {
+      confidence: 0.95, offset: 0,
+      declared: `${count} 个对象`,
+      actual: `${b.length} 字节`,
+      detail: '对象按 [type+size varint][zlib 数据] 排列；OFS_DELTA 会在 pack 内部按偏移找基底。',
+      recipe: 'git verify-pack -v <file.idx>；或 git cat-file --batch-all-objects'
+    }));
+    const TYPE = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag', 6: 'ofs-delta', 7: 'ref-delta' };
+    const hist = {}, flags = [], seen = new Set();
+    const byOffset = new Map();
+    const limit = Math.min(count, 50000);
+    let p = 12, done = 0, deltaOk = 0, deltaFail = 0, totalOut = 0, artifactsOut = 0;
+    while (p < b.length && done < limit) {
+      const objOff = p;
+      const h = gitPackVarint(b, p);
+      if (!h || !h.type) break;
+      p = h.next;
+      let base = null;
+      if (h.type === 6) {
+        let c = b[p++], off = c & 0x7f;
+        while (c & 0x80) { c = b[p++]; off = ((off + 1) << 7) | (c & 0x7f); }
+        base = byOffset.get(objOff - off) || null;
+      } else if (h.type === 7) {
+        p += 20;   // REF_DELTA：基底可能不在本 pack，按 SHA 索引超出这里的能力
+      }
+      const z = MDZ.inflateZlib(b, p, Math.max(Math.min(h.size * 2, 64 * 1024 * 1024), 1 << 20));
+      if (!z.out || !z.consumed) { deltaFail++; break; }
+      p += z.consumed;
+      let data = z.out, type = TYPE[h.type] || ('type' + h.type);
+      if (h.type >= 1 && h.type <= 4) {
+        data = z.out.subarray(0, Math.min(h.size, z.out.length));
+      } else if (h.type === 6) {
+        if (!base) { deltaFail++; done++; continue; }
+        const merged = gitDeltaApply(base.data, z.out);
+        if (!merged) { deltaFail++; done++; continue; }
+        data = merged; type = base.type; deltaOk++;
+      } else if (h.type === 7) {
+        deltaFail++; done++; continue;
+      }
+      byOffset.set(objOff, { type, data });
+      hist[type] = (hist[type] || 0) + 1;
+      totalOut += data.length;
+      if (type !== 'tree') {
+        const text = MDZ.utf8(data) || ascii(data, Math.min(data.length, 65536));
+        const found = MDZ.flagFindAll(text);
+        for (const f of found) {
+          if (!seen.has(f)) { seen.add(f); flags.push(f); }
+        }
+        if (artifactsOut < 24 && (type === 'commit' || type === 'tag')) {
+          artifacts.push(artifact(`git-pack-${done + 1}-${type}.txt`, data.subarray(0, 262144), `Git ${type} 对象`));
+          artifactsOut++;
+        } else if (artifactsOut < 24 && type === 'blob') {
+          const dt = MDZ.detectType(data);
+          const interesting = found.length > 0 || (dt.format !== 'unknown' && dt.format !== 'TEXT');
+          if (interesting) {
+            artifacts.push(artifact(`git-pack-${done + 1}-blob.bin`, data.subarray(0, 4 * 1024 * 1024), 'Git blob（看起来是文件/含 flag）'));
+            artifactsOut++;
+          }
+        }
+      }
+      done++;
+      if (totalOut > 128 * 1024 * 1024) {
+        findings.push(finding('L1', 'git_limit', '解压总量超过 128MB，提前停止', {
+          confidence: 0.6, detail: '用 git verify-pack 看剩余对象。'
+        }));
+        break;
+      }
+    }
+    findings.push(finding('L2', 'git_objects', `解出 ${done} 个对象${deltaOk ? '（应用 ' + deltaOk + ' 个 delta）' : ''}`, {
+      confidence: 0.85,
+      actual: Object.keys(hist).map(k => `${k} ${hist[k]}`).join(' · ') || '无',
+      preview: Object.keys(hist).map(k => `${k}: ${hist[k]}`).join('\n')
+    }));
+    for (const f of flags.slice(0, 10)) {
+      findings.push(finding('L3', 'git_flag', `pack 内容里出现 ${f}`, { confidence: 0.99, actual: f }));
+    }
+    if (deltaFail) {
+      findings.push(finding('L1', 'git_delta_skip', `${deltaFail} 个 delta 没能还原`, {
+        confidence: 0.7,
+        detail: 'REF_DELTA 的基底在别的 pack 里时需要按 SHA 建索引；本工具只还原同 pack 内引用的 OFS_DELTA。',
+        recipe: 'git cat-file --batch-all-objects --batch-check、git unpack-objects'
+      }));
+    }
+    return { findings, artifacts };
+  }
+
+  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE, auditGitObject, auditGitPack, gitLooseObject });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

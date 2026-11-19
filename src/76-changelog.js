@@ -25,6 +25,8 @@
         'zlib / gzip / LZMA 解压，扫到就自动解压并递归分析',
         'ZIP 条目遍历（stored / deflate）、注释、尾挂',
         '字体 sfnt 表、SQLite 页结构、ELF/PE 节表与 overlay',
+        'SQLite 行级扫描：B 树叶页按记录格式解文本列，UTF-8/UTF-16 都读，溢出页也跟，结果导出 sqlite-rows.txt',
+        'Git：松散对象（zlib + "<type> <size>\\0"）与 packfile（含 OFS_DELTA 增量还原），提交/blob 里的 flag 直接点名',
         '文件头被削 / 开头多出字节的猜测与一键修复'
       ]
     },

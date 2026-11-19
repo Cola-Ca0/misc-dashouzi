@@ -1296,6 +1296,43 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== Git 对象 ==');
+{
+  const blob = fs.readFileSync(path.join(__dirname, 'fixtures', 'git_blob.obj'));
+  const r = M.auditGitObject(blob, 'git_blob.obj');
+  check('Git 松散对象解出 blob', !!r && r.findings.some(f => /Git blob 对象/.test(f.title))
+    && r.findings.some(f => f.actual === 'flag{git_loose_blob}'),
+    JSON.stringify(r && r.findings.map(f => f.type + ':' + (f.actual || f.title)).slice(0, 4)));
+  const an = M.analyze(blob, 'git_blob.obj', {});
+  check('Git 松散对象进入分析链', findingText(an).indexOf('flag{git_loose_blob}') >= 0, findingText(an).slice(0, 160));
+  const pack = fs.readFileSync(path.join(__dirname, 'fixtures', 'repo.pack'));
+  check('Git pack 类型识别', M.detectType(pack, 'x.pack').format === 'GIT', M.detectType(pack, 'x.pack').format);
+  const p = M.auditGitPack(pack, 'repo.pack');
+  const txt = p.findings.map(f => (f.title || '') + ' ' + (f.actual || '') + ' ' + (f.preview || '')).join('\n');
+  check('Git pack 对象与 OFS_DELTA 还原', txt.indexOf('flag{git_pack_blob}') >= 0
+    && txt.indexOf('flag{git_pack_delta}') >= 0 && txt.indexOf('flag{git_pack_commit}') >= 0, txt.slice(0, 300));
+  check('Git pack 产出对象产物', (p.artifacts || []).some(a => /^git-pack-/.test(a.name)),
+    JSON.stringify((p.artifacts || []).map(a => a.name)));
+}
+console.log('\n== SQLite 行扫描 ==');
+{
+  const db = fs.readFileSync(path.join(__dirname, 'fixtures', 'rows.db'));
+  const r = M.auditSQLite(db);
+  const card = r.findings.find(f => f.type === 'sqlite_rows');
+  check('SQLite 逐行扫描读出行文本', !!card && card.title.indexOf('行') >= 0
+    && r.findings.some(f => f.actual === 'flag{sqlite_row_data}'),
+    JSON.stringify(r.findings.map(f => f.type + ':' + (f.actual || f.title)).slice(0, 6)));
+  check('SQLite 溢出页里的 flag 也能捞出', r.findings.some(f => f.actual === 'flag{sqlite_overflow}'),
+    JSON.stringify(r.findings.map(f => f.actual).filter(Boolean)));
+  check('SQLite 行文本导出产物', r.artifacts.some(a => a.name === 'sqlite-rows.txt' && a.bytes.length > 100),
+    JSON.stringify(r.artifacts.map(a => a.name)));
+  const u16 = fs.readFileSync(path.join(__dirname, 'fixtures', 'utf16.db'));
+  const r2 = M.auditSQLite(u16);
+  check('SQLite UTF-16 库行扫描', r2.findings.some(f => f.actual === 'flag{sqlite_utf16}'),
+    JSON.stringify(r2.findings.map(f => f.type + ':' + (f.actual || f.title)).slice(0, 6)));
+  const an = M.analyze(db, 'rows.db', {});
+  check('SQLite 进入分析链', M.flags(an).indexOf('flag{sqlite_row_data}') >= 0, M.flags(an).join(' '));
+}
 console.log('\n== PSD ==');
 {
   const p = fs.readFileSync(path.join(__dirname, 'fixtures', 'layered.psd'));

@@ -685,6 +685,90 @@ def fixture_psd():
     return hdr + struct.pack(">I", 0) + struct.pack(">I", len(res)) + res + struct.pack(">I", len(layer_mask)) + layer_mask + comp + b"flag{psd_tail}"
 
 
+def _sqlite_bytes(utf16=False, flag="flag{sqlite_row_data}"):
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    if utf16:
+        conn.execute("PRAGMA encoding='UTF-16le'")
+    conn.execute("CREATE TABLE secrets (id INTEGER PRIMARY KEY, name TEXT, value TEXT)")
+    conn.execute("INSERT INTO secrets (name, value) VALUES (?, ?)", ("cover", "nothing to see here"))
+    conn.execute("INSERT INTO secrets (name, value) VALUES (?, ?)", ("flag", flag))
+    conn.execute("INSERT INTO secrets (name, value) VALUES (?, ?)", ("ovfl", "A" * 5000 + "flag{sqlite_overflow}"))
+    conn.commit()
+    data = conn.serialize()
+    conn.close()
+    return data
+
+
+def fixture_sqlite_rows():
+    return _sqlite_bytes(False)
+
+
+def fixture_sqlite_utf16():
+    return _sqlite_bytes(True, "flag{sqlite_utf16}")
+
+
+def fixture_git_blob():
+    data = b"flag{git_loose_blob}\n"
+    return zlib.compress(b"blob " + str(len(data)).encode() + b"\x00" + data, 9)
+
+
+def _git_obj_header(typ, size):
+    out = bytearray([(typ << 4) | (size & 0x0f)])
+    size >>= 4
+    while size:
+        out[-1] |= 0x80
+        out.append(size & 0x7f)
+        size >>= 7
+    return bytes(out)
+
+
+def _git_enc_ofs(n):
+    out = [n & 0x7f]
+    n >>= 7
+    while n:
+        n -= 1
+        out.append(0x80 | (n & 0x7f))
+        n >>= 7
+    return bytes(reversed(out))
+
+
+def _git_base128(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7f
+        n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def _git_delta(base, result):
+    # 只生成「整段复制 base + 插入余下部分」的 delta
+    out = bytearray(_git_base128(len(base)) + _git_base128(len(result)))
+    out.append(0x90)                      # copy，带 1 字节 size，offset 默认 0
+    out.append(len(base) & 0xff)
+    tail = result[len(base):]
+    out.append(len(tail))
+    out += tail
+    return bytes(out)
+
+
+def fixture_git_pack():
+    blob = b"flag{git_pack_blob}\n"
+    result = blob + b"flag{git_pack_delta}"
+    commit = b"tree 0000000000000000000000000000000000000000\nauthor CTF <ctf@example.com>\n\nflag{git_pack_commit}\n"
+    pack = bytearray(b"PACK" + struct.pack(">II", 2, 3))
+    base_off = len(pack)
+    pack += _git_obj_header(3, len(blob)) + zlib.compress(blob, 9)
+    delta_off = len(pack)
+    delta = _git_delta(blob, result)
+    pack += _git_obj_header(6, len(delta)) + _git_enc_ofs(delta_off - base_off) + zlib.compress(delta, 9)
+    pack += _git_obj_header(1, len(commit)) + zlib.compress(commit, 9)
+    pack += hashlib.sha1(pack).digest()
+    return bytes(pack)
+
+
 def fixture_bzip2_two():
     import bz2
     return bz2.compress(b"flag{first_bz2}", 9) + bz2.compress(b"flag{second_bz2}", 9)
@@ -1358,6 +1442,10 @@ FIXTURES = [
     ("zip_plain.zip", fixture_zip_plain, ["ZIP 条目", "flag{zip_entry}"]),
     ("bzip2_text.bz2", fixture_bzip2, ["bzip2 解压", "flag{bzip2_layers}"]),
     ("layered.psd", fixture_psd, ["PSD 16 × 16", "隐藏图层", "flag{psd_hidden_layer}", "flag{psd_tail}"]),
+    ("rows.db", fixture_sqlite_rows, ["逐行扫描", "flag{sqlite_row_data}", "flag{sqlite_overflow}"]),
+    ("utf16.db", fixture_sqlite_utf16, ["UTF-16le", "flag{sqlite_utf16}"]),
+    ("git_blob.obj", fixture_git_blob, ["Git blob 对象", "flag{git_loose_blob}"]),
+    ("repo.pack", fixture_git_pack, ["Git packfile", "flag{git_pack_blob}", "flag{git_pack_delta}", "flag{git_pack_commit}"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),
