@@ -528,5 +528,5 @@
     return { out, error, warnings, blocks, checkType: lastCheck, streams, verifiedChecks, tail };
   }
 
-  Object.assign(MDZ, { lzmaDecompressAlone, lzma2Decompress, xzDecompress });
+  Object.assign(MDZ, { lzmaDecompressAlone, lzma2Decompress, xzDecompress, bcjX86Decode });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

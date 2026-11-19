@@ -481,6 +481,136 @@
   function b62encode(input) { return baseBigEncode(input, B62_A); }
   function b62decode(s) { return baseBigDecode(s, B62_A); }
 
+  // ---------- base36 / base58check / z85 / base85(IPv6) / base45 ----------
+  const B36_A = '0123456789abcdefghijklmnopqrstuvwxyz';
+  const B85_IPV6 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~';
+  const Z85_A = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#';
+  const B45_A = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
+  function b36encode(input) { return baseBigEncode(input, B36_A); }
+  function b36decode(s) { return baseBigDecode(String(s).toLowerCase(), B36_A); }
+
+  function sha256Bytes(bytes) {
+    const h = MDZ.sha256(toU8(bytes));
+    const out = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
+    return out;
+  }
+  function b58checkEncode(input) {
+    const b = toU8(input);
+    const sum = sha256Bytes(sha256Bytes(b)).subarray(0, 4);
+    const out = new Uint8Array(b.length + 4);
+    out.set(b); out.set(sum, b.length);
+    return b58encode(out);
+  }
+  function b58checkDecode(s) {
+    const all = b58decode(s);
+    if (!all || all.length < 4) return null;
+    const payload = all.subarray(0, all.length - 4);
+    const want = sha256Bytes(sha256Bytes(payload)).subarray(0, 4);
+    for (let i = 0; i < 4; i++) if (all[all.length - 4 + i] !== want[i]) return null;
+    return payload;
+  }
+
+  function b85ipv6Encode(input) {
+    const b = toU8(input);
+    let out = '';
+    for (let i = 0; i < b.length; i += 4) {
+      const n = Math.min(4, b.length - i);
+      let v = 0;
+      for (let j = 0; j < 4; j++) v = v * 256 + (j < n ? b[i + j] : 0);
+      let chunk = '';
+      for (let j = 0; j < 5; j++) { chunk = B85_IPV6[v % 85] + chunk; v = Math.floor(v / 85); }
+      out += chunk.slice(0, n + 1);
+    }
+    return out;
+  }
+  function b85ipv6Decode(s) {
+    const t = String(s).replace(/\s+/g, '');
+    if (!t.length) return null;
+    const out = [];
+    for (let i = 0; i < t.length; i += 5) {
+      const n = Math.min(5, t.length - i);
+      if (n < 2) return null;
+      let v = 0;
+      for (let j = 0; j < 5; j++) {
+        const dig = j < n ? B85_IPV6.indexOf(t[i + j]) : 84;
+        if (dig < 0) return null;
+        v = v * 85 + dig;
+      }
+      if (v > 0xFFFFFFFF) return null;
+      const bytes = [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255];
+      out.push(...bytes.slice(0, n - 1));
+    }
+    return Uint8Array.from(out);
+  }
+
+  function z85Encode(input) {
+    const b = toU8(input);
+    if (b.length % 4) return { error: 'Z85 要求输入长度是 4 的倍数' };
+    let out = '';
+    for (let i = 0; i < b.length; i += 4) {
+      let v = b[i] * 16777216 + b[i + 1] * 65536 + b[i + 2] * 256 + b[i + 3];
+      let chunk = '';
+      for (let j = 0; j < 5; j++) { chunk = Z85_A[v % 85] + chunk; v = Math.floor(v / 85); }
+      out += chunk;
+    }
+    return { text: out };
+  }
+  function z85Decode(s) {
+    const t = String(s).replace(/\s+/g, '');
+    if (!t.length || t.length % 5) return null;
+    const out = [];
+    for (let i = 0; i < t.length; i += 5) {
+      let v = 0;
+      for (let j = 0; j < 5; j++) {
+        const d = Z85_A.indexOf(t[i + j]);
+        if (d < 0) return null;
+        v = v * 85 + d;
+        if (v > 0xFFFFFFFF) return null;
+      }
+      out.push((v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255);
+    }
+    return Uint8Array.from(out);
+  }
+
+  function b45encode(input) {
+    const b = toU8(input);
+    let out = '';
+    for (let i = 0; i + 1 < b.length; i += 2) {
+      const n = b[i] * 256 + b[i + 1];
+      out += B45_A[n % 45] + B45_A[Math.floor(n / 45) % 45] + B45_A[Math.floor(n / 2025)];
+    }
+    if (b.length % 2) {
+      const n = b[b.length - 1];
+      out += B45_A[n % 45] + B45_A[Math.floor(n / 45)];
+    }
+    return out;
+  }
+  function b45decode(s) {
+    const t = String(s);
+    if (!t.length) return null;
+    const out = [];
+    for (let i = 0; i < t.length;) {
+      const spare = t.length - i;
+      if (spare >= 3) {
+        const a = B45_A.indexOf(t[i]), b = B45_A.indexOf(t[i + 1]), c = B45_A.indexOf(t[i + 2]);
+        if (a < 0 || b < 0 || c < 0) return null;
+        const n = a + b * 45 + c * 2025;
+        if (n > 0xFFFF) return null;
+        out.push((n >>> 8) & 255, n & 255);
+        i += 3;
+      } else if (spare === 2) {
+        const a = B45_A.indexOf(t[i]), b = B45_A.indexOf(t[i + 1]);
+        if (a < 0 || b < 0) return null;
+        const n = a + b * 45;
+        if (n > 0xFF) return null;
+        out.push(n);
+        i += 2;
+      } else return null;
+    }
+    return Uint8Array.from(out);
+  }
+
   function qpEncode(s) {
     const b = utf8Bytes(s);
     let out = '';
@@ -614,11 +744,16 @@
     { group: 'Base 系列', items: [
       { id: 'hex-encode', label: 'Base16 编码（Hex）' }, { id: 'hex-decode', label: 'Base16 解码（Hex）' },
       { id: 'base32-encode', label: 'Base32 编码' }, { id: 'base32-decode', label: 'Base32 解码' },
+      { id: 'base36-encode', label: 'Base36 编码' }, { id: 'base36-decode', label: 'Base36 解码' },
+      { id: 'base45-encode', label: 'Base45 编码' }, { id: 'base45-decode', label: 'Base45 解码' },
       { id: 'base58-encode', label: 'Base58 编码' }, { id: 'base58-decode', label: 'Base58 解码' },
+      { id: 'base58check-encode', label: 'Base58Check 编码' }, { id: 'base58check-decode', label: 'Base58Check 解码' },
       { id: 'base62-encode', label: 'Base62 编码' }, { id: 'base62-decode', label: 'Base62 解码' },
       { id: 'base64-encode', label: 'Base64 编码' }, { id: 'base64-decode', label: 'Base64 解码' },
       { id: 'base64url-encode', label: 'Base64URL 编码' }, { id: 'base64url-decode', label: 'Base64URL 解码' },
       { id: 'base85-encode', label: 'Base85 / Ascii85 编码' }, { id: 'base85-decode', label: 'Base85 / Ascii85 解码' },
+      { id: 'base85ipv6-encode', label: 'Base85 编码（IPv6 / RFC1924）' }, { id: 'base85ipv6-decode', label: 'Base85 解码（IPv6 / RFC1924）' },
+      { id: 'z85-encode', label: 'Z85 编码（ZeroMQ）' }, { id: 'z85-decode', label: 'Z85 解码（ZeroMQ）' },
       { id: 'base91-encode', label: 'Base91 编码' }, { id: 'base91-decode', label: 'Base91 解码' },
       { id: 'base92-encode', label: 'Base92 编码' }, { id: 'base92-decode', label: 'Base92 解码' },
       { id: 'base100-encode', label: 'Base100 编码（Emoji）' }, { id: 'base100-decode', label: 'Base100 解码（Emoji）' },
@@ -661,12 +796,22 @@
         case 'base64url-decode': return okBytes(b64urlDecode(s));
         case 'base32-encode': return okText(b32encode(enc));
         case 'base32-decode': { const b = b32decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base32' }; }
+        case 'base36-encode': return okText(b36encode(enc));
+        case 'base36-decode': { const b = b36decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base36' }; }
+        case 'base45-encode': return okText(b45encode(enc));
+        case 'base45-decode': { const b = b45decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base45' }; }
         case 'base58-encode': return okText(b58encode(enc));
         case 'base58-decode': { const b = b58decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base58' }; }
+        case 'base58check-encode': return okText(b58checkEncode(enc));
+        case 'base58check-decode': { const b = b58checkDecode(s); return b ? okBytes(b) : { ok: false, error: 'Base58Check 校验和不匹配' }; }
         case 'base62-encode': return okText(b62encode(enc));
         case 'base62-decode': { const b = b62decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base62' }; }
         case 'base85-encode': return okText(a85encode(enc));
         case 'base85-decode': { const b = a85decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Ascii85' }; }
+        case 'base85ipv6-encode': return okText(b85ipv6Encode(enc));
+        case 'base85ipv6-decode': { const b = b85ipv6Decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base85 (IPv6)' }; }
+        case 'z85-encode': { const r = z85Encode(enc); return r.error ? { ok: false, error: r.error } : okText(r.text); }
+        case 'z85-decode': { const b = z85Decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Z85（长度需为 5 的倍数）' }; }
         case 'base91-encode': return okText(b91encode(enc));
         case 'base91-decode': { const b = b91decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base91' }; }
         case 'base92-encode': return okText(b92encode(enc));
@@ -795,6 +940,8 @@
     decodeOnce, decodeChain, scanText,
     b32encode, b64urlEncode, b64urlDecode, a85encode, b91encode, b58encode, b58decode,
     b92encode, b92decode, b100encode, b100decode, B92, B100_BASE,
+    b36encode, b36decode, b45encode, b45decode, b58checkEncode, b58checkDecode,
+    z85Encode, z85Decode, b85ipv6Encode, b85ipv6Decode,
     b62encode, b62decode, hexEncode, hexDecode, qpEncode, qpDecode, uuencode,
     urlEncode, htmlEncode, unicodeEncode, unicodeDecode, morseEncode, morseDecode,
     baconEncode, baconDecode, a1z26Encode, a1z26Decode, binEncode, binDecode,

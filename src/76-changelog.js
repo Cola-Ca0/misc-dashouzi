@@ -30,7 +30,7 @@
         'ZIP 条目遍历（stored / deflate）、注释、尾挂',
         '字体 sfnt 表、SQLite 页结构、ELF/PE 节表与 overlay',
         'SQLite 行级扫描：B 树叶页按记录格式解文本列，UTF-8/UTF-16 都读，溢出页也跟，结果导出 sqlite-rows.txt',
-        'Git：松散对象（zlib + "<type> <size>\\0"）与 packfile（含 OFS_DELTA 增量还原），提交/blob 里的 flag 直接点名',
+        'Git：松散对象（zlib + "<type> <size>\\0"）与 packfile（OFS_DELTA 按偏移、REF_DELTA 按 SHA-1 索引回填，基底排在后面也能还原），提交/blob 里的 flag 直接点名',
         'Mach-O：32/64 位（大小端）与 fat/fat_arch_64 切片、段/节表、入口点、代码签名、尾部 overlay；零填充节不算文件尾',
         'ISO9660：卷描述符、目录树、文件提取、卷空间后附加；Joliet UTF-16 文件名',
         'MP4/MOV：box 树、ftyp/mvhd、ilst 元数据、free/skip 非零填充、mdat 与尾部附加',
@@ -53,7 +53,7 @@
       items: [
         '魔数识别 + 扩展名对账（真身与扩展名不符时点名）',
         'strings / UTF-16 扫描、编码自动链（hex/base64/base32/base85/base91/uu/URL/HTML）；解出来是文件就切产物',
-        '编码工具页（纯本机、不需要 companion）：Base16/32/58/62/64/64URL/85/91/92/100、URL、HTML、QP、Unicode、UU、ROT13/47、Atbash、摩斯、培根、A1Z26、二/八/十进制字节，全部可编可解',
+        '编码工具页（纯本机、不需要 companion）：Base16/32/36/45/58/58Check/62/64/64URL/85/85(IPv6)/Z85/91/92/100、URL、HTML、QP、Unicode、UU、ROT13/47、Atbash、摩斯、培根、A1Z26、二/八/十进制字节，全部可编可解',
         '自定义 Base 表：任意字母表编码/解码（换表 Base64、Base32 直接填表），长度 2/4/8/16/32/64 走位流，其余走大整数',
         '编码爆破：常见解码器 + ROT1-25 + Atbash + 三层自动链全跑，按可读性与 flag 命中排序，点一条直接载入',
         '不可见字符隐写：零宽字符、Unicode Tag（U+E0000 区）、变体选择符（VS1–VS240）三种都还原成文本/产物',
@@ -68,9 +68,11 @@
     {
       version: '1.1.0', date: '2026-11-19', title: '编码工具箱与格式大扩展',
       added: [
-        '「编码工具」独立页：Base16/32/58/62/64/64URL/85/91/92/100、二/八/十进制、URL/HTML/QP/Unicode/UU、ROT13/47、Atbash、摩斯、培根、A1Z26，双向转换；自定义 Base 字母表；编码爆破（全部解码器 + ROT + 常见换表 + 多层链，按可读性/flag 排序）',
+        '「编码工具」独立页：Base16/32/36/45/58/58Check/62/64/64URL/85/85(IPv6)/Z85/91/92/100、二/八/十进制、URL/HTML/QP/Unicode/UU、ROT13/47、Atbash、摩斯、培根、A1Z26，双向转换；自定义 Base 字母表；编码爆破（全部解码器 + ROT + 常见换表 + 多层链，按可读性/flag 排序）',
         '分析时发现常见编码会同时显示原文与自动解码结果，可直接转到编码页继续',
         '新格式：PSD（图层/隐藏层预览/合成图）、SQLite 行扫描、Git 松散对象与 packfile（OFS/REF delta）、FLAC 元数据、ISO9660、MP4/MOV、Java class、PCX、TIFF（PackBits/LZW/Deflate/predictor）、bzip2/TGA/LNK/OLE/DTMF',
+        '7Z 成员解压：LZMA/LZMA2、压缩头、Delta/x86 BCJ 过滤器，成员直接作为产物继续递归',
+        'Git REF_DELTA 按 SHA-1 索引回填，基底排在 delta 后面也能还原',
         'XZ/LZMA2 解压：多块、连接流、Delta、x86 BCJ、CRC32/CRC64/SHA-256 校验与尾部附加数据',
         'Mach-O：大小端 32/64 位、fat 与 fat_arch_64、段/节、入口、代码签名与 overlay',
         'Unicode Tag / 变体选择符 / 零宽字符隐写检测',

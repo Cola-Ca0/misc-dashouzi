@@ -739,6 +739,14 @@
     return o === resultSize ? out : null;
   }
 
+  function gitObjectSha(type, data) {
+    const head = `${type} ${data.length}\0`;
+    const hb = new Uint8Array(head.length + data.length);
+    for (let i = 0; i < head.length; i++) hb[i] = head.charCodeAt(i) & 255;
+    hb.set(data, head.length);
+    return MDZ.sha1(hb);
+  }
+
   function auditGitPack(input, name) {
     const b = toU8(input);
     const findings = [], artifacts = [];
@@ -748,47 +756,17 @@
       confidence: 0.95, offset: 0,
       declared: `${count} 个对象`,
       actual: `${b.length} 字节`,
-      detail: '对象按 [type+size varint][zlib 数据] 排列；OFS_DELTA 会在 pack 内部按偏移找基底。',
+      detail: '对象按 [type+size varint][zlib 数据] 排列；OFS_DELTA 按偏移找基底，REF_DELTA 按 SHA-1 索引找（基底可以排在后面）。',
       recipe: 'git verify-pack -v <file.idx>；或 git cat-file --batch-all-objects'
     }));
     const TYPE = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag', 6: 'ofs-delta', 7: 'ref-delta' };
     const hist = {}, flags = [], seen = new Set();
-    const byOffset = new Map();
+    const byOffset = new Map(), bySha = new Map(), pending = [];
     const limit = Math.min(count, 50000);
-    let p = 12, done = 0, deltaOk = 0, deltaFail = 0, totalOut = 0, artifactsOut = 0;
-    while (p < b.length && done < limit) {
-      const objOff = p;
-      const h = gitPackVarint(b, p);
-      if (!h || !h.type) break;
-      p = h.next;
-      let base = null;
-      if (h.type === 6) {
-        let c = b[p++], off = c & 0x7f;
-        while (c & 0x80) { c = b[p++]; off = ((off + 1) << 7) | (c & 0x7f); }
-        base = byOffset.get(objOff - off) || null;
-      } else if (h.type === 7) {
-        p += 20;   // REF_DELTA：基底可能不在本 pack，按 SHA 索引超出这里的能力
-      }
-      const z = MDZ.inflateZlib(b, p, Math.max(Math.min(h.size * 2, 64 * 1024 * 1024), 1 << 20));
-      if (!z.out || !z.consumed) { deltaFail++; break; }
-      p += z.consumed;
-      let data = z.out, type = TYPE[h.type] || ('type' + h.type);
-      if (h.type >= 1 && h.type <= 4) {
-        data = z.out.subarray(0, Math.min(h.size, z.out.length));
-      } else if (h.type === 6) {
-        if (!base) { deltaFail++; done++; continue; }
-        const merged = gitDeltaApply(base.data, z.out);
-        if (!merged) { deltaFail++; done++; continue; }
-        data = merged; type = base.type; deltaOk++;
-      } else if (h.type === 7) {
-        // 基底可能在别的 pack；至少把 delta 里的字面量（insert 段）扫一遍
-        const dtext = MDZ.utf8(z.out) || ascii(z.out, Math.min(z.out.length, 65536));
-        for (const f of MDZ.flagFindAll(dtext)) {
-          if (!seen.has(f)) { seen.add(f); flags.push(f); }
-        }
-        deltaFail++; done++; continue;
-      }
+    let p = 12, done = 0, deltaOk = 0, deltaFail = 0, totalOut = 0, artifactsOut = 0, seq = 0;
+    const record = (objOff, type, data) => {
       byOffset.set(objOff, { type, data });
+      if (MDZ.sha1) bySha.set(gitObjectSha(type, data), { type, data });
       hist[type] = (hist[type] || 0) + 1;
       totalOut += data.length;
       if (type !== 'tree') {
@@ -798,16 +776,59 @@
           if (!seen.has(f)) { seen.add(f); flags.push(f); }
         }
         if (artifactsOut < 24 && (type === 'commit' || type === 'tag')) {
-          artifacts.push(artifact(`git-pack-${done + 1}-${type}.txt`, data.subarray(0, 262144), `Git ${type} 对象`));
+          artifacts.push(artifact(`git-pack-${++seq}-${type}.txt`, data.subarray(0, 262144), `Git ${type} 对象`));
           artifactsOut++;
         } else if (artifactsOut < 24 && type === 'blob') {
           const dt = MDZ.detectType(data);
           const interesting = found.length > 0 || (dt.format !== 'unknown' && dt.format !== 'TEXT');
           if (interesting) {
-            artifacts.push(artifact(`git-pack-${done + 1}-blob.bin`, data.subarray(0, 4 * 1024 * 1024), 'Git blob（看起来是文件/含 flag）'));
+            artifacts.push(artifact(`git-pack-${++seq}-blob.bin`, data.subarray(0, 4 * 1024 * 1024), 'Git blob（看起来是文件/含 flag）'));
             artifactsOut++;
           }
         }
+      }
+    };
+    while (p < b.length && done < limit) {
+      const objOff = p;
+      const h = gitPackVarint(b, p);
+      if (!h || !h.type) break;
+      p = h.next;
+      let base = null, refSha = null;
+      if (h.type === 6) {
+        let c = b[p++], off = c & 0x7f;
+        while (c & 0x80) { c = b[p++]; off = ((off + 1) << 7) | (c & 0x7f); }
+        base = byOffset.get(objOff - off) || null;
+      } else if (h.type === 7) {
+        refSha = MDZ.bytesToHex(b.subarray(p, p + 20));
+        p += 20;
+        base = bySha.get(refSha) || null;
+      }
+      const z = MDZ.inflateZlib(b, p, Math.max(Math.min(h.size * 2, 64 * 1024 * 1024), 1 << 20));
+      if (!z.out || !z.consumed) { deltaFail++; break; }
+      p += z.consumed;
+      let data = z.out, type = TYPE[h.type] || ('type' + h.type);
+      if (h.type >= 1 && h.type <= 4) {
+        data = z.out.subarray(0, Math.min(h.size, z.out.length));
+        record(objOff, type, data);
+      } else if (h.type === 6) {
+        if (!base) { deltaFail++; done++; continue; }
+        const merged = gitDeltaApply(base.data, z.out);
+        if (!merged) { deltaFail++; done++; continue; }
+        type = base.type; deltaOk++;
+        record(objOff, type, merged);
+      } else if (h.type === 7) {
+        if (base) {
+          const merged = gitDeltaApply(base.data, z.out);
+          if (merged) { type = base.type; deltaOk++; record(objOff, type, merged); }
+          else { deltaFail++; }
+        } else {
+          // 基底可能排在后面，先记下来，扫描完整个 pack 再按 SHA 回填
+          pending.push({ objOff, baseSha: refSha, delta: z.out });
+        }
+        done++;
+        continue;
+      } else {
+        record(objOff, type, data);
       }
       done++;
       if (totalOut > 128 * 1024 * 1024) {
@@ -816,6 +837,30 @@
         }));
         break;
       }
+    }
+    // 多轮回填 REF_DELTA：delta 可以引用排在它后面的对象
+    for (let pass = 0; pass < 8 && pending.length; pass++) {
+      const next = [];
+      let progressed = false;
+      for (const q of pending) {
+        const base = bySha.get(q.baseSha);
+        if (!base) { next.push(q); continue; }
+        const merged = gitDeltaApply(base.data, q.delta);
+        if (!merged) { next.push(q); continue; }
+        record(q.objOff, base.type, merged);
+        deltaOk++; progressed = true;
+      }
+      pending.length = 0;
+      pending.push(...next);
+      if (!progressed) break;
+    }
+    for (const q of pending) {
+      // 基底不在本 pack（thin pack）：至少把 delta 里的字面量（insert 段）扫一遍
+      const dtext = MDZ.utf8(q.delta) || ascii(q.delta, Math.min(q.delta.length, 65536));
+      for (const f of MDZ.flagFindAll(dtext)) {
+        if (!seen.has(f)) { seen.add(f); flags.push(f); }
+      }
+      deltaFail++;
     }
     findings.push(finding('L2', 'git_objects', `解出 ${done} 个对象${deltaOk ? '（应用 ' + deltaOk + ' 个 delta）' : ''}`, {
       confidence: 0.85,
@@ -828,7 +873,7 @@
     if (deltaFail) {
       findings.push(finding('L1', 'git_delta_skip', `${deltaFail} 个 delta 没能还原`, {
         confidence: 0.7,
-        detail: 'REF_DELTA 的基底在别的 pack 里时需要按 SHA 建索引；本工具只还原同 pack 内引用的 OFS_DELTA。',
+        detail: 'OFS_DELTA 按偏移、REF_DELTA 按 SHA-1 索引查找基底（基底排在后面也能回填）；只有基底不在本 pack 的 thin pack 才会失败。',
         recipe: 'git cat-file --batch-all-objects --batch-check、git unpack-objects'
       }));
     }

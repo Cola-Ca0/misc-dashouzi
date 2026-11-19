@@ -200,6 +200,14 @@ console.log('\n== 归档 / PDF / MP3 ==');
 
   const sz = M.analyze(rd('seven_plain.7z'), 'seven_plain.7z', {});
   check('7Z 文件表解析出名字', sz.findings.some(f => /7Z：2 个文件/.test(f.title)), sz.findings.map(f => f.title).join(' | '));
+  check('7Z LZMA2 成员解压', sz.artifacts.some(a => a.name === 'flag.txt' && a.bytes.length === 440)
+    && M.flags(sz).indexOf('flag{7z_lzma2_member}') >= 0, sz.artifacts.map(a => a.name + ':' + a.bytes.length).join(','));
+  const sz1 = M.analyze(rd('seven_lzma1.7z'), 'seven_lzma1.7z', {});
+  check('7Z LZMA1 成员解压', sz1.artifacts.some(a => a.name === 'flag.txt' && a.bytes.length === 440)
+    && M.flags(sz1).indexOf('flag{7z_lzma2_member}') >= 0, sz1.findings.map(f => f.title).join(' | '));
+  const szb = M.analyze(rd('seven_bcj.7z'), 'seven_bcj.7z', {});
+  check('7Z x86 BCJ + LZMA2 成员解压', szb.artifacts.some(a => a.name === 'notes.bin' && a.bytes.length === 1024)
+    && M.flags(szb).indexOf('flag{7z_lzma2_member}') >= 0, szb.findings.map(f => f.title).join(' | '));
 
   const mp3 = M.analyze(rd('mp3_frames.mp3'), 'mp3_frames.mp3', {});
   check('MP3 帧表解析', mp3.findings.some(f => f.type === 'mp3_frames'));
@@ -1576,6 +1584,12 @@ console.log('\n== Git 对象 ==');
     && txt.indexOf('flag{git_pack_delta}') >= 0 && txt.indexOf('flag{git_pack_commit}') >= 0, txt.slice(0, 300));
   check('Git pack 产出对象产物', (p.artifacts || []).some(a => /^git-pack-/.test(a.name)),
     JSON.stringify((p.artifacts || []).map(a => a.name)));
+  check('SHA-1 实现向量', M.sha1(Buffer.from('abc')) === 'a9993e364706816aba3e25717850c26c9cd0d89d', M.sha1(Buffer.from('abc')));
+  const refPack = fs.readFileSync(path.join(__dirname, 'fixtures', 'ref.pack'));
+  const rp = M.auditGitPack(refPack, 'ref.pack');
+  const rtxt = rp.findings.map(f => (f.title || '') + ' ' + (f.actual || '') + ' ' + (f.preview || '')).join('\n');
+  check('Git REF_DELTA 基底后置回填', rtxt.indexOf('flag{git_ref_base}') >= 0 && rtxt.indexOf('flag{git_ref_delta}') >= 0
+    && !rp.findings.some(f => f.type === 'git_delta_skip'), rtxt.slice(0, 300));
 }
 console.log('\n== SQLite 行扫描 ==');
 {
@@ -1632,6 +1646,18 @@ console.log('\n== 编码工具箱 ==');
   rt('base91', 'base91', 'flag{b91_roundtrip!}');
   rt('base92', 'base92', 'flag{b92_roundtrip!}');
   rt('base100', 'base100', 'flag{b100_roundtrip} 中文😀');
+  rt('base36', 'base36', 'flag{b36_roundtrip}');
+  rt('base45', 'base45', 'flag{b45_roundtrip}');
+  rt('base58check', 'base58check', 'flag{b58check_roundtrip}');
+  rt('base85ipv6', 'base85ipv6', 'flag{rfc1924_roundtrip}');
+  rt('z85', 'z85', 'abcdEFGH1234');
+  check('Base45 RFC 9285 向量', M.codecApply('base45-encode', 'AB').text === 'BB8'
+    && M.codecApply('base45-decode', 'BB8').text === 'AB'
+    && M.codecApply('base45-encode', 'Hello!!').text === '%69 VD92EX0',
+    M.codecApply('base45-encode', 'AB').text);
+  check('Z85 参考向量', Buffer.from(M.z85Decode('HelloWorld')).equals(Buffer.from([0x86, 0x4f, 0xd2, 0x6f, 0xb5, 0x59, 0xf7, 0x5b]))
+    && M.z85Encode(Uint8Array.from([0x86, 0x4f, 0xd2, 0x6f, 0xb5, 0x59, 0xf7, 0x5b])).text === 'HelloWorld');
+  check('Base58Check 拒绝坏校验和', !M.codecApply('base58check-decode', M.codecApply('base58-encode', 'flag').text).ok);
   check('Base92 参考向量', M.codecApply('base92-encode', 'hello').text === 'Fc_$aOB'
     && M.codecApply('base92-decode', 'Fc_$aOB').text === 'hello'
     && M.codecApply('base92-encode', '').text === '~', M.codecApply('base92-encode', 'hello').text);

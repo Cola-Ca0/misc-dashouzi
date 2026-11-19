@@ -2672,6 +2672,16 @@
   });
   document.addEventListener('DOMContentLoaded', () => {
     $('#ver').textContent = 'v' + (M.VERSION || '0.1.0');
+    // 无壁纸构建（发布版）旁边如果放了 atri-bg.jpg，就自动启用本地壁纸。
+    // 图片字节不进 HTML：公开仓库里永远不会出现版权素材；没有这张图时保持纯色。
+    if (document.body.classList.contains('no-bg')) {
+      const probe = new Image();
+      probe.onload = () => {
+        document.body.classList.remove('no-bg');
+        document.documentElement.style.setProperty('--bg-image', 'url("atri-bg.jpg")');
+      };
+      probe.src = 'atri-bg.jpg';
+    }
     bindDrop();
     // 改了「深度扫描 / 像素上限」要重跑，否则界面还是上一轮的结论
     const rerun = () => {

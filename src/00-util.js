@@ -207,6 +207,39 @@
 
   function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
 
+  function sha1(bytes) {
+    const b = toU8(bytes);
+    const bitLen = b.length * 8;
+    const withPad = new Uint8Array(((b.length + 8) >> 6 << 6) + 64);
+    withPad.set(b);
+    withPad[b.length] = 0x80;
+    const dv = new DataView(withPad.buffer);
+    dv.setUint32(withPad.length - 8, Math.floor(bitLen / 0x100000000));
+    dv.setUint32(withPad.length - 4, bitLen >>> 0);
+    let h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
+    const w = new Uint32Array(80);
+    for (let off = 0; off < withPad.length; off += 64) {
+      for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4);
+      for (let i = 16; i < 80; i++) {
+        const x = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+        w[i] = ((x << 1) | (x >>> 31)) >>> 0;
+      }
+      let a = h0, bb = h1, c = h2, d = h3, e = h4;
+      for (let i = 0; i < 80; i++) {
+        let f, k;
+        if (i < 20) { f = (bb & c) | (~bb & d); k = 0x5A827999; }
+        else if (i < 40) { f = bb ^ c ^ d; k = 0x6ED9EBA1; }
+        else if (i < 60) { f = (bb & c) | (bb & d) | (c & d); k = 0x8F1BBCDC; }
+        else { f = bb ^ c ^ d; k = 0xCA62C1D6; }
+        const t = ((((a << 5) | (a >>> 27)) >>> 0) + (f >>> 0) + e + k + w[i]) >>> 0;
+        e = d; d = c; c = ((bb << 30) | (bb >>> 2)) >>> 0; bb = a; a = t;
+      }
+      h0 = (h0 + a) >>> 0; h1 = (h1 + bb) >>> 0; h2 = (h2 + c) >>> 0;
+      h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
+    }
+    return [h0, h1, h2, h3, h4].map(x => hex32(x)).join('');
+  }
+
   // ---------- 文件身份 ----------
   const MAGICS = [
     { name: 'PNG', mime: 'image/png', sig: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
@@ -705,7 +738,7 @@
     VERSION,
     toU8, hex, hex32, bytesToHex, ascii, utf8, utf16le, utf16be, cstr,
     entropy, printableRatio, strings, utf16strings,
-    fnv1a, sha256,
+    fnv1a, sha256, sha1,
     detectType, detectDamagedHeader, alternateName, startsWith, finding, artifact, safeSlice, concatBytes,
     setFlagFormat, getFlagFormat, isFlagFormatCustom, flagMatch, flagFindAll
   });

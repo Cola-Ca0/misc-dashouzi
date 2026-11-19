@@ -1,8 +1,7 @@
 /* misc大手子 — 55 归档：TAR / RAR / 7Z
- * 目标不是完整解压（RAR 压缩算法、7z 的 LZMA2 都不现实），而是：
  *   TAR：成员遍历 + 全部成员直接取出（tar 本身不压缩）
  *   RAR：RAR4/RAR5 头解析改名 + 加密检测 + stored 成员取出
- *   7Z ：头部解析、文件表（未压缩头）、加密检测；压缩头给出明确提示
+ *   7Z ：文件表 + LZMA/LZMA2 成员解压（Delta / x86 BCJ 过滤器），加密/未知过滤器明确报告
  */
 (function (root) {
   'use strict';
@@ -330,38 +329,457 @@
     return names;
   }
 
+  // 7z 的 ReadNumber：首字节高位是「后续还有几字节」的掩码，不是普通 varint
+  function sevenNum(b, p) {
+    if (p >= b.length) return null;
+    const first = b[p++];
+    let mask = 0x80, value = 0;
+    for (let i = 0; i < 8; i++) {
+      if (!(first & mask)) {
+        value += (first & (mask - 1)) * Math.pow(2, 8 * i);
+        return { value, next: p };
+      }
+      if (p >= b.length) return null;
+      value += b[p++] * Math.pow(2, 8 * i);
+      mask >>= 1;
+    }
+    return null;
+  }
+
+  function sevenReadBits(b, p, n) {
+    const bytes = Math.ceil(n / 8);
+    if (p + bytes > b.length) return null;
+    const bits = [];
+    for (let i = 0; i < n; i++) bits.push(!!(b[p + (i >> 3)] & (0x80 >> (i & 7))));
+    return { bits, next: p + bytes };
+  }
+
+  function sevenBitVector(b, p, n) {
+    if (p >= b.length) return null;
+    const all = b[p++];
+    let defined;
+    if (all) defined = new Array(n).fill(true);
+    else {
+      const d = sevenReadBits(b, p, n);
+      if (!d) return null;
+      defined = d.bits; p = d.next;
+    }
+    const bits = [];
+    for (let i = 0; i < n; i++) {
+      if (!defined[i]) { bits.push(false); continue; }
+      if (p >= b.length) return null;
+      bits.push(!!b[p++]);
+    }
+    return { bits, next: p };
+  }
+
+  function sevenDigests(b, p, n) {
+    if (p >= b.length) return null;
+    const all = b[p++];
+    let defined;
+    if (all) defined = new Array(n).fill(true);
+    else {
+      const d = sevenReadBits(b, p, n);
+      if (!d) return null;
+      defined = d.bits; p = d.next;
+    }
+    for (let i = 0; i < n; i++) if (defined[i]) { if (p + 4 > b.length) return null; p += 4; }
+    return { next: p };
+  }
+
+  function sevenFolder(b, p) {
+    const numCoders = b[p++];
+    if (!numCoders || numCoders > 32) return null;
+    const coders = [];
+    let totalIn = 0, totalOut = 0, inBase = 0, outBase = 0;
+    for (let i = 0; i < numCoders; i++) {
+      if (p >= b.length) return null;
+      const flags = b[p++];
+      const idSize = flags & 0x0F;
+      if (!idSize || p + idSize > b.length) return null;
+      const id = b.subarray(p, p + idSize); p += idSize;
+      let numIn = 1, numOut = 1;
+      if (flags & 0x10) {
+        const a = sevenNum(b, p); if (!a) return null;
+        const c = sevenNum(b, a.next); if (!c) return null;
+        numIn = a.value; numOut = c.value; p = c.next;
+      }
+      let props = null;
+      if (flags & 0x20) {
+        const n = sevenNum(b, p); if (!n) return null;
+        p = n.next;
+        if (p + n.value > b.length) return null;
+        props = b.subarray(p, p + n.value); p += n.value;
+      }
+      coders.push({ id, props, numIn, numOut, inBase, outIndex: outBase });
+      totalIn += numIn; totalOut += numOut; inBase += numIn; outBase += numOut;
+    }
+    const bind = [];
+    for (let i = 0; i < totalOut - 1; i++) {
+      const a = sevenNum(b, p); if (!a) return null;
+      const c = sevenNum(b, a.next); if (!c) return null;
+      bind.push({ inIndex: a.value, outIndex: c.value }); p = c.next;
+    }
+    const numPacked = totalIn - bind.length;
+    const packed = [];
+    if (numPacked === 1) packed.push(0);
+    else {
+      for (let i = 0; i < numPacked; i++) {
+        const n = sevenNum(b, p); if (!n) return null;
+        packed.push(n.value); p = n.next;
+      }
+    }
+    const used = new Set(bind.map(x => x.outIndex));
+    let finalOut = 0;
+    for (let i = 0; i < totalOut; i++) if (!used.has(i)) { finalOut = i; break; }
+    return { folder: { coders, bind, packed, totalIn, totalOut, finalOut, unpackSizes: [] }, next: p };
+  }
+
+  function sevenMethod(id) {
+    if (id.length === 1) {
+      if (id[0] === 0x21) return 'lzma2';
+      if (id[0] === 0x03) return 'delta';
+      if (id[0] === 0x00) return 'copy';
+    }
+    if (id.length === 3 && id[0] === 0x03 && id[1] === 0x01 && id[2] === 0x01) return 'lzma1';
+    if (id.length === 4 && id[0] === 0x03 && id[1] === 0x03 && id[2] === 0x01 && id[3] === 0x03) return 'bcj';
+    if (id.length === 4 && id[0] === 0x06 && id[1] === 0xF1 && id[2] === 0x07 && id[3] === 0x01) return 'aes';
+    return 'other';
+  }
+
+  function sevenMethodName(id) {
+    const m = sevenMethod(id);
+    if (m !== 'other') return m;
+    return Array.from(id, x => x.toString(16).padStart(2, '0')).join('');
+  }
+
+  // StreamsInfo：PackInfo / UnpackInfo / SubStreamsInfo
+  function sevenStreams(b, p) {
+    const s = { packPos: 0, packSizes: [], folders: [], counts: [], sizes: [] };
+    let id = p < b.length ? b[p++] : 0;
+    if (id === 0x06) {
+      const pp = sevenNum(b, p); if (!pp) return null;
+      s.packPos = pp.value; p = pp.next;
+      const np = sevenNum(b, p); if (!np) return null;
+      const nPack = np.value; p = np.next;
+      if (nPack > 65536) return null;
+      while (p < b.length) {
+        const t = b[p++];
+        if (t === 0) break;
+        if (t === 0x09) {
+          for (let i = 0; i < nPack; i++) {
+            const z = sevenNum(b, p); if (!z) return null;
+            s.packSizes.push(z.value); p = z.next;
+          }
+        } else if (t === 0x0A) {
+          const d = sevenDigests(b, p, nPack); if (!d) return null;
+          p = d.next;
+        } else return null;
+      }
+      id = p < b.length ? b[p++] : 0;
+    }
+    if (id === 0x07) {
+      if (b[p++] !== 0x0B) return null;
+      const nf = sevenNum(b, p); if (!nf) return null;
+      p = nf.next;
+      if (b[p++] !== 0) return null;   // external folder 不支持
+      if (nf.value > 4096) return null;
+      for (let i = 0; i < nf.value; i++) {
+        const f = sevenFolder(b, p); if (!f) return null;
+        s.folders.push(f.folder); p = f.next;
+      }
+      if (b[p++] !== 0x0C) return null;
+      for (const f of s.folders) {
+        for (let i = 0; i < f.totalOut; i++) {
+          const z = sevenNum(b, p); if (!z) return null;
+          f.unpackSizes.push(z.value); p = z.next;
+        }
+      }
+      while (p < b.length) {
+        const t = b[p++];
+        if (t === 0) break;
+        if (t === 0x0A) {
+          const total = s.folders.reduce((a, f) => a + f.totalOut, 0);
+          const d = sevenDigests(b, p, total); if (!d) return null;
+          p = d.next;
+        } else return null;
+      }
+      id = p < b.length ? b[p++] : 0;
+    }
+    if (id === 0x08) {
+      s.counts = s.folders.map(() => 1);
+      while (p < b.length) {
+        const t = b[p++];
+        if (t === 0) break;
+        if (t === 0x0D) {
+          for (let i = 0; i < s.folders.length; i++) {
+            const z = sevenNum(b, p); if (!z) return null;
+            s.counts[i] = z.value; p = z.next;
+          }
+        } else if (t === 0x09) {
+          s.sizes = s.folders.map(() => []);
+          for (let i = 0; i < s.folders.length; i++) {
+            const c = s.counts[i] || 1;
+            for (let k = 0; k < c - 1; k++) {
+              const z = sevenNum(b, p); if (!z) return null;
+              s.sizes[i].push(z.value); p = z.next;
+            }
+          }
+        } else if (t === 0x0A) {
+          const total = s.counts.reduce((a, c) => a + c, 0);
+          const d = sevenDigests(b, p, total); if (!d) return null;
+          p = d.next;
+        } else return null;
+      }
+      id = p < b.length ? b[p++] : 0;
+    }
+    if (id !== 0) return null;
+    if (!s.counts.length) s.counts = s.folders.map(() => 1);
+    if (!s.sizes.length) s.sizes = s.folders.map(() => []);
+    for (let i = 0; i < s.folders.length; i++) {
+      const f = s.folders[i];
+      const c = Math.max(1, s.counts[i] || 1);
+      const arr = s.sizes[i] || (s.sizes[i] = []);
+      const final = f.unpackSizes[f.finalOut] || 0;
+      const known = arr.reduce((a, x) => a + x, 0);
+      while (arr.length < c) arr.push(arr.length === c - 1 ? Math.max(0, final - known) : 0);
+    }
+    return { streams: s, next: p };
+  }
+
+  function sevenDecodeFolder(packed, folder, cap) {
+    const lz = folder.coders.find(c => sevenMethod(c.id) === 'lzma2' || sevenMethod(c.id) === 'lzma1');
+    if (!lz) return { error: '7Z 压缩方法暂不支持（' + folder.coders.map(c => sevenMethodName(c.id)).join(' + ') + '）' };
+    const outSize = folder.unpackSizes[lz.outIndex] || 0;
+    let data;
+    if (sevenMethod(lz.id) === 'lzma2') {
+      const z = MDZ.lzma2Decompress ? MDZ.lzma2Decompress(packed, 0, Math.max(cap, outSize)) : null;
+      if (!z || z.error || !z.out) return { error: (z && z.error) || 'LZMA2 解压失败' };
+      data = z.out;
+    } else {
+      if (!lz.props || lz.props.length < 5) return { error: 'LZMA 属性缺失' };
+      const synth = new Uint8Array(13 + packed.length);
+      synth.set(lz.props.subarray(0, 5));
+      let n = outSize;
+      for (let i = 0; i < 8; i++) { synth[5 + i] = n % 256; n = Math.floor(n / 256); }
+      synth.set(packed, 13);
+      const z = MDZ.lzmaDecompressAlone ? MDZ.lzmaDecompressAlone(synth, { maxOut: Math.max(cap, outSize) }) : null;
+      if (!z || z.error || !z.out) return { error: (z && z.error) || 'LZMA 解压失败' };
+      data = z.out;
+    }
+    // 过滤器（Delta / BCJ）都在压缩器之前，解码时按反序作用在 LZMA 输出上
+    const filters = folder.coders.filter(c => c !== lz && sevenMethod(c.id) !== 'copy');
+    for (let i = filters.length - 1; i >= 0; i--) {
+      const f = filters[i];
+      const m = sevenMethod(f.id);
+      if (m === 'bcj' && MDZ.bcjX86Decode) MDZ.bcjX86Decode(data);
+      else if (m === 'delta') {
+        const d = (f.props && f.props.length ? f.props[0] : 0) + 1;
+        for (let k = d; k < data.length; k++) data[k] = (data[k] + data[k - d]) & 255;
+      } else {
+        return { error: '7Z 过滤器暂不支持（' + sevenMethodName(f.id) + '）' };
+      }
+    }
+    const final = folder.unpackSizes[folder.finalOut] || data.length;
+    if (data.length > final) data = data.subarray(0, final);
+    return { out: data };
+  }
+
+  function sevenDecodeStreams(b, packedBase, streams, cap) {
+    let packIdx = 0, cursor = packedBase + streams.packPos, totalOut = 0;
+    const outputs = [];
+    for (const f of streams.folders) {
+      const parts = [];
+      for (let i = 0; i < f.packed.length; i++) {
+        const n = streams.packSizes[packIdx++] || 0;
+        if (cursor + n > b.length) return { error: '7Z 打包数据越界' };
+        parts.push(b.subarray(cursor, cursor + n)); cursor += n;
+      }
+      let packed;
+      if (parts.length === 1) packed = parts[0];
+      else {
+        const len = parts.reduce((a, x) => a + x.length, 0);
+        packed = new Uint8Array(len);
+        let off = 0;
+        for (const x of parts) { packed.set(x, off); off += x.length; }
+      }
+      const r = sevenDecodeFolder(packed, f, cap);
+      if (r.error) return r;
+      totalOut += r.out.length;
+      if (totalOut > cap) return { error: '7Z 解压超过上限' };
+      outputs.push(r.out);
+    }
+    return { outputs };
+  }
+
+  function sevenFiles(b, p) {
+    const n = sevenNum(b, p); if (!n) return null;
+    p = n.next;
+    const num = n.value;
+    if (num > 65536) return null;
+    const files = [];
+    for (let i = 0; i < num; i++) files.push({ name: '', empty: false, dir: false });
+    while (p < b.length) {
+      const id = b[p++];
+      if (id === 0) break;
+      const sz = sevenNum(b, p); if (!sz) return null;
+      p = sz.next;
+      const bodyStart = p, bodyEnd = Math.min(p + sz.value, b.length);
+      if (id === 0x0E) {
+        const v = sevenBitVector(b, bodyStart, num); if (!v) return null;
+        for (let i = 0; i < num; i++) files[i].empty = v.bits[i];
+      } else if (id === 0x0F) {
+        const empties = files.filter(f => f.empty);
+        const v = sevenBitVector(b, bodyStart, empties.length); if (!v) return null;
+        for (let i = 0; i < empties.length; i++) empties[i].dir = !v.bits[i];
+      } else if (id === 0x11) {
+        if (b[bodyStart] !== 0) return null;
+        let q = bodyStart + 1, fi = 0;
+        while (q + 1 < bodyEnd && fi < num) {
+          let s = '';
+          while (q + 1 < bodyEnd) {
+            const ch = b[q] | (b[q + 1] << 8); q += 2;
+            if (!ch) break;
+            s += String.fromCharCode(ch);
+          }
+          files[fi++].name = s;
+        }
+      }
+      p = bodyEnd;
+    }
+    return { files, next: p };
+  }
+
+  function sevenHeader(b, nextOff, nextSize, cap) {
+    const start = 32 + nextOff;
+    if (start + nextSize > b.length) return null;
+    let hdr = b.subarray(start, start + nextSize);
+    let encoded = false;
+    if (hdr[0] === 0x17) {
+      encoded = true;
+      const st = sevenStreams(hdr, 1);
+      if (!st) return null;
+      const dec = sevenDecodeStreams(b, 32, st.streams, 64 * 1024 * 1024);
+      if (dec.error || !dec.outputs.length) return null;
+      hdr = dec.outputs[0];
+    }
+    if (hdr[0] !== 0x01) return null;
+    let p = 1, streams = null, files = null;
+    while (p < hdr.length) {
+      const id = hdr[p++];
+      if (id === 0) break;
+      if (id === 0x02) {
+        while (p < hdr.length) {
+          const t = hdr[p++];
+          if (t === 0) break;
+          const n = sevenNum(hdr, p); if (!n) return null;
+          p = n.next + n.value;
+        }
+      } else if (id === 0x04) {
+        const st = sevenStreams(hdr, p); if (!st) return null;
+        streams = st.streams; p = st.next;
+      } else if (id === 0x05) {
+        const fi = sevenFiles(hdr, p); if (!fi) return null;
+        files = fi.files; p = fi.next;
+      } else {
+        const n = sevenNum(hdr, p); if (!n) return null;
+        p = n.next + n.value;
+      }
+    }
+    return { hdr, streams, files, encoded };
+  }
+
   function audit7Z(input, name) {
     const b = toU8(input);
     const findings = [], artifacts = [];
     if (b.length < 32) return { findings: [finding('L0', 'format', '不是 7Z', { detail: '头太短' })], artifacts, image: null };
     const nextOff = sevenU64(b, 12);
     const nextSize = sevenU64(b, 20);
-    const hdrStart = 32 + nextOff;
-    let names = null, encoded = false;
-    if (hdrStart + nextSize <= b.length && nextSize < 64 * 1024 * 1024) {
-      const hdr = b.subarray(hdrStart, hdrStart + nextSize);
-      if (hdr[0] === 0x17) encoded = true;            // kEncodedHeader（压缩过的头）
-      else names = parse7zNames(hdr, 0);
-    }
-    if (names && names.length) {
-      findings.push(finding('L1', '7z', `7Z：${names.length} 个文件`, {
-        confidence: 0.9, offset: 0,
-        declared: names.slice(0, 8).join(' | '),
-        actual: `${nextSize} 字节的未压缩文件表`,
-        detail: '7z 的压缩算法（LZMA2/BCJ）暂不实现；文件表已经解出来，内容可用 7z x 展开。',
-        preview: names.join('\n'),
-        recipe: '7z l <file.7z>'
-      }));
-    } else {
-      findings.push(finding('L1', '7z', encoded ? '7Z 容器（头部被压缩）' : '7Z 容器（未解析出文件表）', {
-        confidence: 0.7, offset: 0,
+    const CAP = 64 * 1024 * 1024;
+    const head = sevenHeader(b, nextOff, nextSize, CAP);
+    if (!head) {
+      const names = (() => {
+        const start = 32 + nextOff;
+        if (start + nextSize > b.length || nextSize > CAP) return null;
+        const hdr = b.subarray(start, start + nextSize);
+        return hdr[0] === 0x17 ? null : parse7zNames(hdr, 0);
+      })();
+      const encoded = 32 + nextOff < b.length && b[32 + nextOff] === 0x17;
+      findings.push(finding('L1', '7z', encoded ? '7Z 容器（头部被压缩，解析失败）' : '7Z 容器（文件表解析失败）', {
+        confidence: 0.6, offset: 0,
         declared: `${b.length} 字节`,
-        actual: encoded ? 'kEncodedHeader（LZMA2 压缩头）' : '未知布局',
-        detail: '7z 的文件表通常被 LZMA2 压缩，工具暂不实现该解码器；至少可以确认容器身份与是否加密。',
+        actual: encoded ? 'kEncodedHeader' : '未知布局',
+        detail: '7z 头/压缩流结构超出当前解析范围；可以先确认容器身份与是否加密。',
+        preview: names && names.length ? names.join('\n') : undefined,
         recipe: '7z l <file.7z>'
       }));
+      return { findings, artifacts, image: null, parsed: { names, encoded } };
     }
-    return { findings, artifacts, image: null, parsed: { names, encoded } };
+    const files = head.files || [];
+    const encrypted = head.streams && head.streams.folders.some(f => f.coders.some(c => sevenMethod(c.id) === 'aes'));
+    let decoded = null;
+    if (head.streams && !encrypted) {
+      decoded = sevenDecodeStreams(b, 32, head.streams, CAP);
+    }
+    const entries = [];
+    if (decoded && decoded.outputs) {
+      const flat = [];
+      for (let i = 0; i < decoded.outputs.length; i++) {
+        const out = decoded.outputs[i];
+        const c = head.streams.counts[i] || 1;
+        const sizes = head.streams.sizes[i] || [];
+        let off = 0;
+        for (let k = 0; k < c; k++) {
+          const sz = sizes[k] || 0;
+          flat.push(out.subarray(off, Math.min(off + sz, out.length)));
+          off += sz;
+        }
+      }
+      let idx = 0;
+      for (const f of files) {
+        if (f.empty || f.dir) continue;
+        const bytes = flat[idx++];
+        if (!bytes) break;
+        entries.push({ name: f.name || `file${idx}`, bytes });
+      }
+      if (!files.length) {
+        for (let i = 0; i < flat.length; i++) entries.push({ name: `file${i}`, bytes: flat[i] });
+      }
+    }
+    const totalBytes = entries.reduce((a, e) => a + e.bytes.length, 0);
+    if (entries.length) {
+      findings.push(finding('L1', '7z', `7Z：${entries.length} 个文件，已解压 ${entries.length} 个（${totalBytes} 字节）`, {
+        confidence: 0.95, offset: 0,
+        declared: `${files.length} 个文件`,
+        actual: entries.map(e => `${e.name} (${e.bytes.length}B)`).join(' | ').slice(0, 500),
+        detail: '支持 LZMA2 / LZMA + Delta / x86 BCJ；成员已作为产物切出，内容会继续进入递归分析。',
+        preview: entries.map(e => `${e.name}  ${e.bytes.length} 字节`).join('\n'),
+        recipe: '7z l -slt <file.7z>'
+      }));
+      let n = 0;
+      const seenFlags = new Set();
+      for (const e of entries) {
+        if (n++ >= 64) break;
+        const safe = String(e.name).split(/[\\/]/).pop().replace(/[^\w.\-]+/g, '_').slice(0, 80) || `file${n}`;
+        artifacts.push(artifact(safe, e.bytes, `7Z 成员：${e.name}`));
+        const text = MDZ.strings(e.bytes, 6).join('\n');
+        for (const fl of MDZ.flagFindAll(text)) {
+          if (seenFlags.has(fl)) continue;
+          seenFlags.add(fl);
+          findings.push(finding('L3', '7z_flag', `7Z 成员 ${e.name} 里出现 ${fl}`, { confidence: 0.99, actual: fl }));
+        }
+      }
+    } else {
+      findings.push(finding('L1', '7z', encrypted ? '7Z 容器（已加密）' : '7Z 容器（未能解出成员）', {
+        confidence: 0.75, offset: 0,
+        declared: files.length ? `${files.length} 个文件` : '未知',
+        actual: encrypted ? 'AES 加密，无法离线解压' : (decoded && decoded.error) || '未解出文件内容',
+        preview: files.length ? files.map(f => f.name).join('\n') : undefined,
+        detail: '文件表已解析但内容解压失败；常见原因是加密或使用了未支持的过滤器。',
+        recipe: '7z x -p<password> <file.7z>'
+      }));
+    }
+    return { findings, artifacts, image: null, parsed: { names: files.map(f => f.name), encoded: head.encoded, entries: entries.map(e => e.name) } };
   }
 
   // ---------- bzip2 ----------

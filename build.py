@@ -1216,6 +1216,19 @@ def fixture_git_pack():
     return bytes(pack)
 
 
+def fixture_git_pack_ref():
+    """REF_DELTA，而且基底排在 delta 后面：验证按 SHA-1 索引回填。"""
+    blob = b"flag{git_ref_base}\n"
+    result = blob + b"flag{git_ref_delta}"
+    delta = _git_delta(blob, result)
+    base_sha = hashlib.sha1(b"blob " + str(len(blob)).encode() + b"\x00" + blob).digest()
+    pack = bytearray(b"PACK" + struct.pack(">II", 2, 2))
+    pack += _git_obj_header(7, len(delta)) + base_sha + zlib.compress(delta, 9)
+    pack += _git_obj_header(3, len(blob)) + zlib.compress(blob, 9)
+    pack += hashlib.sha1(pack).digest()
+    return bytes(pack)
+
+
 def fixture_bzip2_two():
     import bz2
     return bz2.compress(b"flag{first_bz2}", 9) + bz2.compress(b"flag{second_bz2}", 9)
@@ -1806,18 +1819,22 @@ def _vint(n):
             return bytes(out)
 
 
+SEVEN_LZMA2_B64 = "N3q8ryccAAQIh3N4gwEAAAAAAAAVAAAAAAAAAGizNMbgBbcBCF0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVdrM/gAOAAegBrXQAAgTMHrg/VOCyVOcZm2o3z7dDuG8aA13xDxmuYFiv/T/EH5V0oHveusz2OHSEXbUv2PtBOLnwr6LBgBrlmVLRDZcYrMziutuRbKW9QGrVIm2GuLsDNwE7h/F5ZjXqeJaKGlxP2XQ1pVWsAAAAXBoEQAQlzAAcLAQABISEBGAx7AAA="
+SEVEN_LZMA1_B64 = "N3q8ryccAARmxbe3hQEAAAAAAAAVAAAAAAAAAJP1by0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVeWHdL//+vPMqA4AB6AG5dAACBMweuD9U4Juj5xmbajhxhUxv9cidStW4NyT7dWZNQtxVi9CmYQPTPFsBkJxl8lSOKv9wL9PICN+ia3gjjZNA9ihN7VyyAGKTvhIt4BTYWOcC5lBJSKEnoaRQn57hdB+6LvcOq7tvN+7f/AAAAABcGgQ8BCXYABwsBAAEhIQEYDHsAAA=="
+SEVEN_BCJ_B64 = "N3q8ryccAAQhbpQbigEAAAAAAAAWAAAAAAAAAPUIwv7gBbcBCF0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVdrM/gAOAAggByXQAAgTMHrg/VOCyVOcZglwW+6URcNIhaOGWcmxUC19UE5t96oJj1QKxa+KUm2M8FVltptv7/GRoxy4JZJWkNQueOQiObqERO2ralHZR9W9o7JE/aSQqGY4hai7vvc11ctHB/h3brk1RV3lH7g2m/Ls82AAAAFwaBEAEJegAHCwEAASEhARgMgIMAAA=="
+
+
 def fixture_7z():
-    """未压缩头的最小 7z：只带文件表，够验证名字解析。"""
-    names = ["flag.txt", "data/a.bin"]
-    name_blob = b"\x00" + b"".join(n.encode("utf-16-le") + b"\x00\x00" for n in names)
-    files_info = bytes([0x05]) + _vint(len(names))
-    files_info += bytes([0x11]) + _vint(len(name_blob)) + name_blob
-    files_info += b"\x00"          # kEnd of FilesInfo properties
-    nxt = bytes([0x01]) + files_info + b"\x00"   # kHeader ... kEnd
-    sh = b"7z\xbc\xaf'\x1c" + bytes([0, 4])
-    tail = struct.pack("<QQI", 0, len(nxt), zlib.crc32(nxt) & 0xFFFFFFFF)
-    start_crc = zlib.crc32(tail) & 0xFFFFFFFF
-    return sh + struct.pack("<I", start_crc) + tail + nxt
+    """真实 7z（py7zr：LZMA2 + 压缩头），验证成员解压。"""
+    return base64.b64decode(SEVEN_LZMA2_B64)
+
+
+def fixture_7z_lzma1():
+    return base64.b64decode(SEVEN_LZMA1_B64)
+
+
+def fixture_7z_bcj():
+    return base64.b64decode(SEVEN_BCJ_B64)
 
 
 def fixture_mp3_frames():
@@ -1893,6 +1910,7 @@ FIXTURES = [
     ("utf16.db", fixture_sqlite_utf16, ["UTF-16le", "flag{sqlite_utf16}"]),
     ("git_blob.obj", fixture_git_blob, ["Git blob 对象", "flag{git_loose_blob}"]),
     ("repo.pack", fixture_git_pack, ["Git packfile", "flag{git_pack_blob}", "flag{git_pack_delta}", "flag{git_pack_commit}"]),
+    ("ref.pack", fixture_git_pack_ref, ["Git packfile", "flag{git_ref_base}", "flag{git_ref_delta}"]),
     ("tagged.flac", fixture_flac, ["FLAC 44100 Hz", "Vorbis 注释", "PADDING 块里有", "内嵌图片", "flag{flac_vorbis}", "flag{flac_padding}", "flag{flac_app}"]),
     ("unicode_tag.txt", fixture_unicode_tag, ["Unicode Tag 隐写", "flag{unicode_tag_stego}", "变体选择符隐写", "flag{vs_stego}"]),
     ("flagdisk.iso", fixture_iso, ["ISO9660", "FLAGDISK", "flag{iso9660_file}", "flag{iso_tail}"]),
@@ -1977,7 +1995,9 @@ FIXTURES = [
     ("b64_png.txt", fixture_b64_png, ["base64 解出 PNG"]),
     ("carve_embedded.bin", fixture_carve, ["内嵌 PNG"]),
     ("rar4_stored.rar", fixture_rar4, ["RAR", "flag{rar_stored}"]),
-    ("seven_plain.7z", fixture_7z, ["7Z", "flag.txt"]),
+    ("seven_plain.7z", fixture_7z, ["7Z", "flag.txt", "flag{7z_lzma2_member}"]),
+    ("seven_lzma1.7z", fixture_7z_lzma1, ["7Z", "flag{7z_lzma2_member}"]),
+    ("seven_bcj.7z", fixture_7z_bcj, ["7Z", "flag{7z_lzma2_member}"]),
     ("mp3_frames.mp3", fixture_mp3_frames, ["MP3 帧", "flag{mp3bits}"]),
     ("pdf_objects.pdf", fixture_pdf, ["PDF", "flag{pdf_embedded}"]),
     ("zip_descriptor.zip", fixture_zip_descriptor, ["descriptor.txt", "flag{zip_descriptor}"]),
