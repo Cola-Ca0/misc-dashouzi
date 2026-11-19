@@ -26,7 +26,7 @@ body {
   margin: 0;
   background:
     linear-gradient(118deg, rgba(250,246,238,.94) 0%, rgba(250,246,238,.83) 38%, rgba(239,246,246,.70) 100%),
-    var(--bg-image) center 36% / cover no-repeat fixed;
+    var(--bg-image) 58% 36% / cover no-repeat fixed;
   background-color: var(--bg);
   color: var(--text);
   font: 14px/1.6 "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
