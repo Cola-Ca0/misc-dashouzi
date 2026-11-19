@@ -854,6 +854,28 @@ def _lzw_encode(data):
     return bytes(out)
 
 
+def fixture_xz_text():
+    data = b"flag{xz_stream} " * 50
+    return lzma.compress(data, format=lzma.FORMAT_XZ)
+
+
+def fixture_xz_crc32():
+    data = b"flag{xz_crc32} " * 40
+    return lzma.compress(data, format=lzma.FORMAT_XZ, check=lzma.CHECK_CRC32)
+
+
+def fixture_xz_delta():
+    data = b"flag{xz_delta_filter} " * 40
+    filters = [{"id": lzma.FILTER_DELTA, "dist": 4}, {"id": lzma.FILTER_LZMA2, "preset": 6}]
+    return lzma.compress(data, format=lzma.FORMAT_XZ, filters=filters)
+
+
+def fixture_xz_bcj():
+    data = b"flag{xz_bcj_unsupported} " * 40
+    filters = [{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2, "preset": 6}]
+    return lzma.compress(data, format=lzma.FORMAT_XZ, filters=filters)
+
+
 def fixture_pdf_lzw():
     NL = bytes([10])
     payload = b"flag{pdf_lzw_stream}" + NL + b"padding " * 8
@@ -1763,6 +1785,10 @@ FIXTURES = [
     ("lzw.tif", fixture_tiff_lzw, ["TIFF", "LZW", "flag{tiff_tail}"]),
     ("packbits.tif", fixture_tiff_packbits, ["TIFF", "PackBits"]),
     ("lzw.pdf", fixture_pdf_lzw, ["PDF 内嵌文件", "flag{pdf_lzw_stream}"]),
+    ("text.xz", fixture_xz_text, ["XZ 解压", "flag{xz_stream}"]),
+    ("crc32.xz", fixture_xz_crc32, ["XZ 解压", "flag{xz_crc32}"]),
+    ("delta.xz", fixture_xz_delta, ["XZ 解压", "flag{xz_delta_filter}"]),
+    ("bcj.xz", fixture_xz_bcj, ["BCJ"]),
     ("deflate.tif", fixture_tiff_deflate, ["TIFF", "Deflate"]),
     ("gray16.tif", fixture_tiff_gray16, ["TIFF", "16 位"]),
     ("palette.tif", fixture_tiff_palette, ["TIFF", "像素"]),

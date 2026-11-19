@@ -696,5 +696,26 @@
     return { findings, artifacts, image: null, parsed: { boxes, meta, mdatBytes, tailAt } };
   }
 
-  Object.assign(MDZ, { isTAR, auditTAR, isRAR, auditRAR, is7Z, audit7Z, auditBzip2, auditISO, auditMP4, tarNum, tarChecksumOk });
+  function auditXZ(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    const z = MDZ.xzDecompress(b, { maxOut: 128 * 1024 * 1024 });
+    if (!z.out || !z.out.length) {
+      findings.push(finding('L0', 'xz', 'XZ 解压失败', {
+        confidence: 0.9, detail: z.error || '没有产出'
+      }));
+      return { findings, artifacts, image: null, parsed: z };
+    }
+    findings.push(finding('L1', 'xz', `XZ 解压（${z.blocks} 块，${z.out.length} 字节）`, {
+      confidence: 0.85,
+      declared: `check 类型 ${z.checkType}`,
+      actual: `${z.out.length} 字节`,
+      detail: (z.warnings || []).join('；') || '块校验通过；过滤器链支持 LZMA2 / Delta。',
+      preview: ascii(z.out, 120)
+    }));
+    artifacts.push(artifact('xz-out.bin', z.out, 'XZ 解压产物' + (z.error ? ' · 部分' : '')));
+    return { findings, artifacts, image: null, parsed: z };
+  }
+
+  Object.assign(MDZ, { isTAR, auditTAR, isRAR, auditRAR, is7Z, audit7Z, auditBzip2, auditXZ, auditISO, auditMP4, tarNum, tarChecksumOk });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

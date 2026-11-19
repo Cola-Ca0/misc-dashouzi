@@ -333,6 +333,37 @@
    ]
   },
   {
+   "name": "text.xz",
+   "b64": "/Td6WFoAAATm1rRGAgAhARYAAAB0L+Wj4AMfABtdADMbCEdYR3orvlPc9juXuMh6wCgsfdlVcPRAAAAAqwJyJ4OtvToAATegBgAAAIIjZo+xxGf7AgAAAAAEWVo=",
+   "expect": [
+    "XZ 解压",
+    "flag{xz_stream}"
+   ]
+  },
+  {
+   "name": "crc32.xz",
+   "b64": "/Td6WFoAAAFpIt42AgAhARYAAAB0L+Wj4AJXABpdADMbCEdYR3orvi3uHAr12rC58XlfIOUyl0AAAAAAZhtASAABMtgEAAAAtNEAvD4wDYsCAAAAAAFZWg==",
+   "expect": [
+    "XZ 解压",
+    "flag{xz_crc32}"
+   ]
+  },
+  {
+   "name": "delta.xz",
+   "b64": "/Td6WFoAAATm1rRGAgEDAQMhARaXj3H84ANvAChdADMbCEdTW+rJjmQhXUlr6sHZqTu0ByJ26BoUGovoFjGylNLQtIWqAAAAFxx36/kKRigAAUTwBgAAACaTwzqxxGf7AgAAAAAEWVo=",
+   "expect": [
+    "XZ 解压",
+    "flag{xz_delta_filter}"
+   ]
+  },
+  {
+   "name": "bcj.xz",
+   "b64": "/Td6WFoAAATm1rRGAgEEACEBFgANhjUf4APnACVdADMbCEdYR3orvitxepNLpOlwSQMsufaMrNVmKz+naaZeamFzkQAAAAAA9yLXvaN61VgAAUHoBwAAALO5IoKxxGf7AgAAAAAEWVo=",
+   "expect": [
+    "BCJ"
+   ]
+  },
+  {
    "name": "deflate.tif",
    "b64": "SUkqABwAAAB4nGNgGNHg/0A7YBQMLAAAAh0BAAoAAAEDAAEAAAAQAAAAAQEDAAEAAAAQAAAAAgEDAAMAAACaAAAAAwEDAAEAAAAIAAAABgEDAAEAAAACAAAAEQEEAAEAAAAIAAAAFQEDAAEAAAADAAAAFgEDAAEAAAAQAAAAFwEEAAEAAAAUAAAAHAEDAAEAAAABAAAAAAAAAAgACAAIAA==",
    "expect": [

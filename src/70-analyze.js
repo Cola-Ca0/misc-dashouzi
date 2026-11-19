@@ -194,7 +194,7 @@
     const cand = strs.filter(s => s.length >= 16 && s.length <= 65536).slice(0, 24);
     for (const s of cand) {
       for (const r of MDZ.decodeChain(s, 3)) {
-        encHits.push(r);
+        encHits.push({ src: s, kind: r.kind, path: r.path, text: r.text });
         if (encHits.length >= 8) break;
       }
       if (encHits.length >= 8) break;
@@ -202,13 +202,13 @@
     if (encHits.length) {
       const seen = new Set();
       const uniq = encHits.filter(r => (seen.has(r.text) ? false : (seen.add(r.text), true)));
-      findings.push(finding('L3', 'encoding', `编码链解出 ${uniq.length} 条候选`, {
+      findings.push(finding('L3', 'encoding', `编码链解出 ${uniq.length} 条候选（原文 → 解码）`, {
         confidence: 0.6,
         declared: `${cand.length} 个长字符串`,
-        actual: uniq.slice(0, 4).map(r => `${r.path.join('→')}: ${r.text.slice(0, 60)}`).join(' | '),
-        detail: '自动尝试 hex / base64 / base32 / base85 / base91 / uuencode / URL / HTML 实体，最多 3 层。',
-        preview: uniq.slice(0, 8).map(r => `[${r.path.join('→')}] ${r.text.slice(0, 160)}`).join('\n'),
-        recipe: '按 path 里的顺序逐层解码'
+        actual: uniq.slice(0, 4).map(r => `原文 ${r.src.slice(0, 40)} → ${r.text.slice(0, 60)}`).join(' | '),
+        detail: '自动尝试 hex / base64 / base32 / base85 / base91 / uuencode / URL / HTML 实体，最多 3 层；下面每条都保留原编码串。',
+        preview: uniq.slice(0, 8).map(r => `原文: ${r.src.slice(0, 200)}\n解码(${r.path.join('→')}): ${r.text.slice(0, 300)}`).join('\n\n'),
+        recipe: '按 path 里的顺序逐层解码；原文串可直接粘到「编码工具」页继续试'
       }));
     }
     // 解出来不是文本而是真文件（base64 的 PNG / hex 的 ZIP…）：切出来当产物，流水线会自动递归
@@ -259,6 +259,7 @@
       case 'RAR': return MDZ.auditRAR(bytes, name, opts);
       case '7Z': return MDZ.audit7Z(bytes, name, opts);
       case 'BZIP2': return MDZ.auditBzip2(bytes, name, opts);
+      case 'XZ': return MDZ.auditXZ(bytes, name, opts);
       case 'TGA': return MDZ.auditTGA(bytes, name, opts);
       case 'PSD': return MDZ.auditPSD(bytes, name, opts);
       case 'PCX': return MDZ.auditPCX(bytes, name);
@@ -286,6 +287,10 @@
     if (kind === 'zlib') return inflateZlib(bytes, offset, cap);
     if (kind === 'gzip') return inflateGzip(bytes, offset, cap);
     if (kind === 'bzip2') return MDZ.inflateBzip2(bytes, offset, cap);
+    if (kind === 'xz' && MDZ.xzDecompress) {
+      const z = MDZ.xzDecompress(bytes.subarray(offset), { maxOut: cap });
+      return z && z.out && z.out.length ? { out: z.out } : { out: null, error: z && z.error };
+    }
     return { out: null };
   }
 
@@ -384,7 +389,7 @@
         } else result.dropped = (result.dropped || 0) + 1;
         continue;
       }
-      if (h.kind !== 'zlib' && h.kind !== 'gzip' && h.kind !== 'bzip2') continue;
+      if (h.kind !== 'zlib' && h.kind !== 'gzip' && h.kind !== 'bzip2' && h.kind !== 'xz') continue;
       // 去重键必须带文件哈希：不同文件里同偏移的流是两条不同的流
       const key = item.hash + '@' + h.kind + '@' + h.offset;
       if (seenOffsets.has(key)) continue;

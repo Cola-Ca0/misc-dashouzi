@@ -1,5 +1,6 @@
-/* misc大手子 — 13 LZMA 单独格式解压
+/* misc大手子 — 13 LZMA / LZMA2 / XZ 解压
  * .lzma = 1 字节属性(lc/lp/pb) + 4 字节字典大小 + 8 字节原始长度(LE，全 FF = 未知) + 范围编码数据
+ * .xz   = 流头 + 若干块（过滤器链，支持 LZMA2 / Delta）+ 块校验
  * 纯 JS，浏览器与 Node 通用；不依赖 xz / companion。
  */
 (function (root) {
@@ -31,30 +32,27 @@
   const O_LITERAL = O_REP_LEN + 514;
   // 长度编码器：choice(1) + choice2(1) + low(16*8) + mid(16*8) + high(256) = 514
 
-  function lzmaDecompressAlone(input, opts) {
+  function createModel(lc, lp, pb) {
+    const m = {
+      lc, lp, pb,
+      probs: new Uint16Array(O_LITERAL + (0x300 << (lc + lp))),
+      state: 0, rep0: 0, rep1: 0, rep2: 0, rep3: 0,
+      resetProbs() { this.probs.fill(PROB_INIT); },
+      resetState() { this.state = 0; this.rep0 = this.rep1 = this.rep2 = this.rep3 = 0; }
+    };
+    m.resetProbs();
+    return m;
+  }
+
+  // 范围解码器核心：LZMA1 与 LZMA2 共用。
+  // host 提供 outLen / at / push / copyMatch / floor；limit 是本次要产出的字节数。
+  function decodeRange(b, start, model, host, limit, opts) {
     const o = opts || {};
-    const b = input instanceof Uint8Array ? input : new Uint8Array(input || []);
-    if (!b || b.length < 13) return { out: null, error: '数据不足 13 字节' };
-    const props = b[0];
-    if (props >= 9 * 5 * 5) return { out: null, error: '属性字节非法（' + props + '）' };
-    const lc = props % 9;
-    const lp = Math.floor(props / 9) % 5;
-    const pb = Math.floor(props / 45);
-    const dictSize = (b[1] | (b[2] << 8) | (b[3] << 16) | (b[4] << 24)) >>> 0;
-    const lo = (b[5] | (b[6] << 8) | (b[7] << 16) | (b[8] << 24)) >>> 0;
-    const hi = (b[9] | (b[10] << 8) | (b[11] << 16) | (b[12] << 24)) >>> 0;
-    const known = !(lo === 0xFFFFFFFF && hi === 0xFFFFFFFF);
-    const declared = known ? hi * 4294967296 + lo : -1;
-    const maxOut = o.maxOut || 64 * 1024 * 1024;
-    if (declared > maxOut) return { out: null, error: '声明解压后 ' + declared + ' 字节，超过上限' };
-
-    const probs = new Uint16Array(O_LITERAL + (0x300 << (lc + lp)));
-    probs.fill(PROB_INIT);
-
-    let pos = 13;
+    let pos = start;
     let range = 0xFFFFFFFF, code = 0;
     for (let i = 0; i < 5; i++) code = ((code << 8) | (pos < b.length ? b[pos++] : 0)) >>> 0;
 
+    const probs = model.probs;
     function normalize() {
       if (range < 0x1000000) {
         range = (range << 8) >>> 0;
@@ -106,44 +104,20 @@
       return 16 + bitTree(base + 2 + 256, 8);
     }
 
-    const out = known ? new Uint8Array(declared) : null;
-    let dyn = out ? null : new Uint8Array(Math.min(maxOut, 1 << 16));
-    let outLen = 0;
-    const at = i => (out ? out[i] : dyn[i]);
-    function push(byte) {
-      if (out) {
-        if (outLen >= out.length) throw new Error('输出超过声明长度');
-        out[outLen++] = byte;
-        return;
-      }
-      if (outLen >= dyn.length) {
-        if (dyn.length >= maxOut) throw new Error('输出超过上限');
-        const g = new Uint8Array(Math.min(maxOut, dyn.length * 2));
-        g.set(dyn);
-        dyn = g;
-      }
-      dyn[outLen++] = byte;
-    }
-    function copyMatch(dist, len) {
-      if (dist + 1 > outLen) throw new Error('回溯距离越界');
-      for (let i = 0; i < len; i++) push(at(outLen - dist - 1));
-    }
-
-    const pbMask = (1 << pb) - 1;
-    const lpMask = (1 << lp) - 1;
-    const limit = known ? declared : maxOut;
-    let state = 0, rep0 = 0, rep1 = 0, rep2 = 0, rep3 = 0;
-    let err = null;
+    const baseOut = host.outLen;
+    const pbMask = (1 << model.pb) - 1;
+    const lpMask = (1 << model.lp) - 1;
+    let err = null, endMarker = false;
     try {
-      while (outLen < limit) {
-        if (!known && pos >= b.length && outLen > 0) break;
-        const posState = outLen & pbMask;
-        if (decodeBit(O_IS_MATCH, (state << 4) + posState) === 0) {
-          const prevByte = outLen > 0 ? at(outLen - 1) : 0;
-          const litBase = O_LITERAL + 0x300 * (((outLen & lpMask) << lc) + (prevByte >>> (8 - lc)));
+      while (host.outLen - baseOut < limit) {
+        if (o.stopAtInputEnd && pos >= b.length && host.outLen > baseOut) break;
+        const posState = host.outLen & pbMask;
+        if (decodeBit(O_IS_MATCH, (model.state << 4) + posState) === 0) {
+          const prevByte = host.outLen > 0 ? host.at(host.outLen - 1) : 0;
+          const litBase = O_LITERAL + 0x300 * (((host.outLen & lpMask) << model.lc) + (prevByte >>> (8 - model.lc)));
           let symbol = 1;
-          if (state >= 7) {
-            let matchByte = at(outLen - rep0 - 1);
+          if (model.state >= 7) {
+            let matchByte = host.at(host.outLen - model.rep0 - 1);
             do {
               const matchBit = (matchByte >> 7) & 1;
               matchByte <<= 1;
@@ -153,38 +127,38 @@
             } while (symbol < 0x100);
           }
           while (symbol < 0x100) symbol = (symbol << 1) | decodeBit(litBase, symbol);
-          push(symbol & 0xFF);
-          state = state < 4 ? 0 : state < 10 ? state - 3 : state - 6;
+          host.push(symbol & 0xFF);
+          model.state = model.state < 4 ? 0 : model.state < 10 ? model.state - 3 : model.state - 6;
           continue;
         }
-        if (decodeBit(O_IS_REP, state) === 1) {
-          if (decodeBit(O_IS_REP_G0, state) === 0) {
-            if (decodeBit(O_IS_REP0_LONG, (state << 4) + posState) === 0) {
-              state = state < 7 ? 9 : 11;
-              push(at(outLen - rep0 - 1));
+        if (decodeBit(O_IS_REP, model.state) === 1) {
+          if (decodeBit(O_IS_REP_G0, model.state) === 0) {
+            if (decodeBit(O_IS_REP0_LONG, (model.state << 4) + posState) === 0) {
+              model.state = model.state < 7 ? 9 : 11;
+              host.push(host.at(host.outLen - model.rep0 - 1));
               continue;
             }
           } else {
             let dist;
-            if (decodeBit(O_IS_REP_G1, state) === 0) dist = rep1;
+            if (decodeBit(O_IS_REP_G1, model.state) === 0) dist = model.rep1;
             else {
-              if (decodeBit(O_IS_REP_G2, state) === 0) dist = rep2;
-              else { dist = rep3; rep3 = rep2; }
-              rep2 = rep1;
+              if (decodeBit(O_IS_REP_G2, model.state) === 0) dist = model.rep2;
+              else { dist = model.rep3; model.rep3 = model.rep2; }
+              model.rep2 = model.rep1;
             }
-            rep1 = rep0;
-            rep0 = dist;
+            model.rep1 = model.rep0;
+            model.rep0 = dist;
           }
           const len = decodeLen(O_REP_LEN, posState) + MATCH_MIN_LEN;
-          state = state < 7 ? 8 : 11;
-          copyMatch(rep0, len);
+          model.state = model.state < 7 ? 8 : 11;
+          host.copyMatch(model.rep0, len);
           continue;
         }
-        rep3 = rep2;
-        rep2 = rep1;
-        rep1 = rep0;
+        model.rep3 = model.rep2;
+        model.rep2 = model.rep1;
+        model.rep1 = model.rep0;
         const len = decodeLen(O_LEN, posState) + MATCH_MIN_LEN;
-        state = state < 7 ? 7 : 10;
+        model.state = model.state < 7 ? 7 : 10;
         const lenState = Math.min(len - MATCH_MIN_LEN, LEN_TO_POS_STATES - 1);
         const posSlot = bitTree(O_POS_SLOT + lenState * (1 << POS_SLOT_BITS), POS_SLOT_BITS);
         let dist;
@@ -200,24 +174,233 @@
             dist += bitTreeRev(O_ALIGN, ALIGN_BITS);
           }
         }
-        rep0 = dist;
-        if (dist === 0xFFFFFFFF) break;   // 结束标记（.lzma 原长未知时靠它收尾）
-        copyMatch(dist, len);
+        model.rep0 = dist;
+        if (dist === 0xFFFFFFFF) {
+          if (o.endMarker) { endMarker = true; break; }
+          throw new Error('非法的结束标记');
+        }
+        host.copyMatch(dist, len);
       }
     } catch (e) {
       err = String(e && e.message || e);
     }
+    return { produced: host.outLen - baseOut, consumed: pos - start, endMarker, error: err };
+  }
 
-    const res = out ? out.subarray(0, outLen) : dyn.subarray(0, outLen);
+  // ---------- LZMA 单独格式 ----------
+  function lzmaDecompressAlone(input, opts) {
+    const o = opts || {};
+    const b = input instanceof Uint8Array ? input : new Uint8Array(input || []);
+    if (!b || b.length < 13) return { out: null, error: '数据不足 13 字节' };
+    const props = b[0];
+    if (props >= 9 * 5 * 5) return { out: null, error: '属性字节非法（' + props + '）' };
+    const lc = props % 9;
+    const lp = Math.floor(props / 9) % 5;
+    const pb = Math.floor(props / 45);
+    const dictSize = (b[1] | (b[2] << 8) | (b[3] << 16) | (b[4] << 24)) >>> 0;
+    const lo = (b[5] | (b[6] << 8) | (b[7] << 16) | (b[8] << 24)) >>> 0;
+    const hi = (b[9] | (b[10] << 8) | (b[11] << 16) | (b[12] << 24)) >>> 0;
+    const known = !(lo === 0xFFFFFFFF && hi === 0xFFFFFFFF);
+    const declared = known ? hi * 4294967296 + lo : -1;
+    const maxOut = o.maxOut || 64 * 1024 * 1024;
+    if (declared > maxOut) return { out: null, error: '声明解压后 ' + declared + ' 字节，超过上限' };
+
+    const model = createModel(lc, lp, pb);
+    const out = known ? new Uint8Array(declared) : null;
+    let dyn = out ? null : new Uint8Array(Math.min(maxOut, 1 << 16));
+    const host = {
+      outLen: 0,
+      floor: 0,
+      at(i) { return out ? out[i] : dyn[i]; },
+      push(byte) {
+        if (out) {
+          if (this.outLen >= out.length) throw new Error('输出超过声明长度');
+          out[this.outLen++] = byte;
+          return;
+        }
+        if (this.outLen >= dyn.length) {
+          if (dyn.length >= maxOut) throw new Error('输出超过上限');
+          const g = new Uint8Array(Math.min(maxOut, dyn.length * 2));
+          g.set(dyn);
+          dyn = g;
+        }
+        dyn[this.outLen++] = byte;
+      },
+      copyMatch(dist, len) {
+        if (dist + 1 > this.outLen - this.floor) throw new Error('回溯距离越界');
+        for (let i = 0; i < len; i++) this.push(this.at(this.outLen - dist - 1));
+      }
+    };
+    const r = decodeRange(b, 13, model, host, known ? declared : maxOut, { endMarker: true, stopAtInputEnd: !known });
+    const res = out ? out.subarray(0, host.outLen) : dyn.subarray(0, host.outLen);
     return {
       out: res.length ? res : null,
-      error: err,
-      partial: !!err,
+      error: r.error,
+      partial: !!r.error,
       declared: known ? declared : null,
       dictSize,
       props: { lc, lp, pb }
     };
   }
 
-  Object.assign(MDZ, { lzmaDecompressAlone });
+  // ---------- LZMA2 ----------
+  function lzma2Decompress(input, start, maxOut) {
+    const b = input;
+    const max = maxOut || 64 * 1024 * 1024;
+    let out = new Uint8Array(Math.min(max, 1 << 20));
+    const host = {
+      outLen: 0,
+      floor: 0,
+      at(i) { return out[i]; },
+      push(v) {
+        if (this.outLen >= out.length) {
+          if (out.length >= max) throw new Error('解压超过上限');
+          const g = new Uint8Array(Math.min(max, out.length * 2));
+          g.set(out);
+          out = g;
+        }
+        out[this.outLen++] = v;
+      },
+      copyMatch(dist, len) {
+        if (dist + 1 > this.outLen - this.floor) throw new Error('LZMA2 回溯越界');
+        for (let i = 0; i < len; i++) this.push(this.at(this.outLen - dist - 1));
+      }
+    };
+    let model = createModel(3, 0, 2);
+    let propsSet = false;
+    let p = start, consumed = 0, error = null;
+    while (p < b.length) {
+      const control = b[p];
+      if (control === 0) { p++; consumed = p - start; break; }
+      if (control < 0x80) {
+        if (control !== 1 && control !== 2) { error = 'LZMA2 控制字节非法（' + control + '）'; break; }
+        if (p + 3 > b.length) { error = 'LZMA2 头截断'; break; }
+        const size = ((b[p + 1] << 8) | b[p + 2]) + 1;
+        p += 3;
+        if (p + size > b.length) { error = 'LZMA2 未压缩块截断'; break; }
+        if (control === 1) host.floor = host.outLen;
+        for (let i = 0; i < size; i++) host.push(b[p++]);
+        consumed = p - start;
+        continue;
+      }
+      const p0 = p++;
+      if (p + 4 > b.length) { error = 'LZMA2 压缩块头截断'; break; }
+      const reset = (control >> 5) & 3;
+      const unpacked = (((control & 0x1F) << 16) | (b[p] << 8) | b[p + 1]) + 1;
+      p += 2;
+      const packed = ((b[p] << 8) | b[p + 1]) + 1;
+      p += 2;
+      if (reset >= 2) {
+        if (p >= b.length) { error = 'LZMA2 属性字节缺失'; break; }
+        const props = b[p++];
+        if (props >= 9 * 5 * 5) { error = 'LZMA2 属性字节非法'; break; }
+        const lc = props % 9, lp = Math.floor(props / 9) % 5, pb = Math.floor(props / 45);
+        model = createModel(lc, lp, pb);
+        propsSet = true;
+      } else if (!propsSet) {
+        error = '首个 LZMA2 压缩块没有属性字节';
+        break;
+      }
+      if (reset >= 1) model.resetState();
+      if (reset === 3) host.floor = host.outLen;
+      if (p + packed > b.length) { error = 'LZMA2 压缩数据截断'; break; }
+      const r = decodeRange(b.subarray(p, p + packed), 0, model, host, unpacked, { endMarker: false });
+      p += packed;
+      if (r.error) { error = r.error; break; }
+      if (r.produced !== unpacked) { error = 'LZMA2 未解满 ' + unpacked + ' 字节'; break; }
+      consumed = p - start;
+      void p0;
+    }
+    return { out: out.subarray(0, host.outLen), consumed, error, outputLen: host.outLen };
+  }
+
+  // ---------- XZ ----------
+  function be32(b, o) { return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0; }
+  function le32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+
+  function xzVli(b, p) {
+    let v = 0, shift = 0, c;
+    do {
+      if (p >= b.length) return { value: -1, next: p };
+      c = b[p++];
+      v += (c & 0x7f) * Math.pow(2, shift);
+      shift += 7;
+    } while (c & 0x80);
+    return { value: v, next: p };
+  }
+
+  function xzDecompress(input, opts) {
+    const o = opts || {};
+    const b = input instanceof Uint8Array ? input : new Uint8Array(input || []);
+    if (b.length < 24 || b[0] !== 0xFD || b[1] !== 0x37 || b[2] !== 0x7A || b[3] !== 0x58 || b[4] !== 0x5A || b[5] !== 0x00) {
+      return { out: null, error: '不是 XZ' };
+    }
+    const maxOut = o.maxOut || 64 * 1024 * 1024;
+    const checkType = ((b[6] << 8) | b[7]) & 0x0F;
+    const checkSize = { 0: 0, 1: 4, 4: 8, 10: 32 }[checkType];
+    if (checkSize === undefined) return { out: null, error: 'XZ 校验类型 ' + checkType + ' 不支持' };
+    const warnings = [];
+    if (MDZ.crc32 && MDZ.crc32(b.subarray(6, 8)) !== le32(b, 8)) warnings.push('流头 CRC32 不匹配');
+    let p = 12, blocks = 0, total = 0, error = null;
+    const chunks = [];
+    while (p < b.length) {
+      if (b[p] === 0) break;   // index 指示符
+      const headerStart = p;
+      const headerSize = (b[p] + 1) * 4;
+      if (p + headerSize > b.length) { error = 'XZ 块头越界'; break; }
+      const headerEnd = p + headerSize;
+      if (MDZ.crc32 && MDZ.crc32(b.subarray(headerStart, headerEnd - 4)) !== le32(b, headerEnd - 4)) {
+        warnings.push('块头 CRC32 不匹配');
+      }
+      const flags = b[p + 1];
+      let q = p + 2;
+      let compSize = -1, uncompSize = -1;
+      if (flags & 0x40) { const v = xzVli(b, q); compSize = v.value; q = v.next; }
+      if (flags & 0x80) { const v = xzVli(b, q); uncompSize = v.value; q = v.next; }
+      const nFilters = (flags & 0x03) + 1;
+      let dictProp = -1, deltaDist = 0, unsupported = '';
+      for (let i = 0; i < nFilters; i++) {
+        const id = xzVli(b, q); q = id.next;
+        const ps = xzVli(b, q); q = ps.next;
+        if (id.value < 0 || ps.value < 0 || q + ps.value > headerEnd - 4) { unsupported = '过滤属性越界'; break; }
+        if (id.value === 0x21) {
+          if (ps.value !== 1) unsupported = 'LZMA2 属性长度异常';
+          else dictProp = b[q];
+        } else if (id.value === 0x03) {
+          deltaDist = (b[q] | 0) + 1;
+        } else {
+          unsupported = 'XZ 过滤器 0x' + id.value.toString(16) + ' 暂不支持（BCJ 等）';
+        }
+        q += ps.value;
+      }
+      if (unsupported) { error = unsupported; break; }
+      if (dictProp < 0) { error = 'XZ 块里没有 LZMA2 过滤器'; break; }
+      const dataStart = headerEnd;
+      const lz = lzma2Decompress(b, dataStart, maxOut - total);
+      if (!lz.out || lz.error) { error = lz.error || 'LZMA2 解压失败'; break; }
+      let data = lz.out;
+      if (deltaDist > 1) {
+        for (let i = deltaDist; i < data.length; i++) data[i] = (data[i] + data[i - deltaDist]) & 255;
+      }
+      p = dataStart + lz.consumed;
+      const pad = (4 - ((p - dataStart) % 4)) % 4;
+      p += pad;
+      if (p + checkSize > b.length) { error = 'XZ 块校验字段越界'; break; }
+      if (checkType === 1 && MDZ.crc32 && (MDZ.crc32(data) >>> 0) !== le32(b, p)) warnings.push('块数据 CRC32 不匹配');
+      p += checkSize;
+      if (compSize >= 0 && compSize !== lz.consumed) warnings.push('压缩大小字段不一致');
+      if (uncompSize >= 0 && uncompSize !== data.length) warnings.push('解压大小字段不一致');
+      chunks.push(data);
+      total += data.length;
+      blocks++;
+      if (total > maxOut) { error = '解压超过上限'; break; }
+      if (lz.consumed <= 0) { error = 'LZMA2 没有前进'; break; }
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) { out.set(c, at); at += c.length; }
+    return { out, error, warnings, blocks, checkType };
+  }
+
+  Object.assign(MDZ, { lzmaDecompressAlone, lzma2Decompress, xzDecompress });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

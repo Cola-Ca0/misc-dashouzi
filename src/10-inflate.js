@@ -537,6 +537,8 @@
       else if (isLzmaAlone(b, i)) hits.push({ kind: 'lzma', offset: i });
       // bzip2：BZh + 块大小数字。随机数据里 BZh 后面跟 1-9 的概率极低
       else if (b[i] === 0x42 && b[i + 1] === 0x5A && b[i + 2] === 0x68 && b[i + 3] >= 0x31 && b[i + 3] <= 0x39) hits.push({ kind: 'bzip2', offset: i });
+      // XZ：6 字节魔数，随机数据里不会出现
+      else if (b[i] === 0xFD && b[i + 1] === 0x37 && b[i + 2] === 0x7A && b[i + 3] === 0x58 && b[i + 4] === 0x5A && b[i + 5] === 0x00) hits.push({ kind: 'xz', offset: i });
     }
     return hits;
   }

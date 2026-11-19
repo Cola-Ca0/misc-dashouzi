@@ -1296,6 +1296,29 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== XZ / LZMA2 ==');
+{
+  const rd = n => fs.readFileSync(path.join(__dirname, 'fixtures', n));
+  const x = rd('text.xz');
+  check('XZ 类型识别', M.detectType(x, 'x.xz').format === 'XZ', M.detectType(x, 'x.xz').format);
+  const z = M.xzDecompress(x);
+  check('XZ LZMA2 解压', !z.error && !!z.out && Buffer.from(z.out).toString('latin1').indexOf('flag{xz_stream}') === 0,
+    z.error || ('len ' + (z.out && z.out.length)));
+  const r = M.auditXZ(x, 'text.xz');
+  check('XZ 审计与产物', r.findings.some(f => f.type === 'xz') && r.artifacts.some(a => a.name === 'xz-out.bin' && a.bytes.length === 800),
+    JSON.stringify(r.artifacts.map(a => a.name)));
+  const an = M.analyze(x, 'text.xz', {});
+  check('XZ 进入分析链', M.flags(an).indexOf('flag{xz_stream}') >= 0, M.flags(an).join(' '));
+  check('XZ CRC32 校验通过', !M.xzDecompress(rd('crc32.xz')).error);
+  const dz = M.xzDecompress(rd('delta.xz'));
+  check('XZ Delta 过滤还原', !!dz.out && Buffer.from(dz.out).toString('latin1').indexOf('flag{xz_delta_filter}') >= 0);
+  const bcj = M.auditXZ(rd('bcj.xz'), 'bcj.xz');
+  check('XZ BCJ 明确报不支持', bcj.findings.some(f => /BCJ|不支持/.test((f.detail || '') + (f.title || '') + (f.actual || ''))),
+    JSON.stringify(bcj.findings.map(f => f.title)));
+  const wrapped = Buffer.concat([Buffer.alloc(64), x]);
+  const an2 = M.analyze(wrapped, 'wrapped.bin', {});
+  check('文件中间的 XZ 流会被解压', M.flags(an2).indexOf('flag{xz_stream}') >= 0, M.flags(an2).join(' '));
+}
 console.log('\n== PDF LZW ==');
 {
   const p = fs.readFileSync(path.join(__dirname, 'fixtures', 'lzw.pdf'));
@@ -1560,6 +1583,11 @@ console.log('\n== 编码工具箱 ==');
   const hits = M.bruteDecode(b64);
   check('编码爆破命中 base64 里的 flag', hits.length > 0 && hits.some(h => h.text.indexOf('flag{brute_b64}') >= 0),
     JSON.stringify(hits.slice(0, 3).map(h => ({ k: h.kind, s: h.score }))));
+  const encText = Buffer.from('note ' + Buffer.from('flag{encoding_pair}').toString('base64') + ' end', 'latin1');
+  const re = M.analyze(encText, 'enc.txt', {});
+  const ef = re.findings.find(x => x.type === 'encoding');
+  check('编码发现同时显示原文与解码', !!ef && ef.preview.indexOf('原文:') >= 0 && ef.preview.indexOf('flag{encoding_pair}') >= 0,
+    ef ? ef.preview.slice(0, 160) : 'no encoding finding');
   const rot = M.bruteDecode(M.rotN('flag{rot_rot}', 13));
   check('编码爆破命中 ROT13', rot.some(h => h.text.indexOf('flag{rot_rot}') >= 0), JSON.stringify(rot.slice(0, 3).map(h => h.kind)));
   const digitFirst = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/';
