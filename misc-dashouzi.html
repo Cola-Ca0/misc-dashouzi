@@ -6058,6 +6058,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     if (planar !== 1) return { error: '平面配置 2 暂不支持' };
     if (!offsets.length || !counts.length) return { error: '缺少 strip offsets' };
     if (![1, 4, 8, 16].includes(bits)) return { error: bits + ' 位样本暂不支持' };
+    if (predictor === 2 && bits !== 8) return { error: 'predictor 2 目前只解 8 位样本' };
     const bytesPerSample = bits === 16 ? 2 : 1;
     const rowBytes = Math.ceil(w * spp * bits / 8);
     const raw = new Uint8Array(rowBytes * h);
@@ -6076,7 +6077,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
         const z = MDZ.inflateZlib(b.subarray(off, off + len), 0, need);
         decoded = z.out;
       } else return { error: '压缩方式 ' + compression + ' 不支持', maxEnd };
-      if (!decoded) return { error: '条带解压失败', maxEnd };
+      if (!decoded || decoded.length < need) return { error: '条带解压后不足 ' + need + ' 字节', maxEnd };
       if (predictor === 2 && bits === 8) {
         for (let r = 0; r < stripRows; r++) {
           const ro = r * rowBytes;
