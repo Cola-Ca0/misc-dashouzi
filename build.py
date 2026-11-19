@@ -1822,6 +1822,7 @@ def _vint(n):
 SEVEN_LZMA2_B64 = "N3q8ryccAAQIh3N4gwEAAAAAAAAVAAAAAAAAAGizNMbgBbcBCF0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVdrM/gAOAAegBrXQAAgTMHrg/VOCyVOcZm2o3z7dDuG8aA13xDxmuYFiv/T/EH5V0oHveusz2OHSEXbUv2PtBOLnwr6LBgBrlmVLRDZcYrMziutuRbKW9QGrVIm2GuLsDNwE7h/F5ZjXqeJaKGlxP2XQ1pVWsAAAAXBoEQAQlzAAcLAQABISEBGAx7AAA="
 SEVEN_LZMA1_B64 = "N3q8ryccAARmxbe3hQEAAAAAAAAVAAAAAAAAAJP1by0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVeWHdL//+vPMqA4AB6AG5dAACBMweuD9U4Juj5xmbajhxhUxv9cidStW4NyT7dWZNQtxVi9CmYQPTPFsBkJxl8lSOKv9wL9PICN+ia3gjjZNA9ihN7VyyAGKTvhIt4BTYWOcC5lBJSKEnoaRQn57hdB+6LvcOq7tvN+7f/AAAAABcGgQ8BCXYABwsBAAEhIQEYDHsAAA=="
 SEVEN_BCJ_B64 = "N3q8ryccAAQhbpQbigEAAAAAAAAWAAAAAAAAAPUIwv7gBbcBCF0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVdrM/gAOAAggByXQAAgTMHrg/VOCyVOcZglwW+6URcNIhaOGWcmxUC19UE5t96oJj1QKxa+KUm2M8FVltptv7/GRoxy4JZJWkNQueOQiObqERO2ralHZR9W9o7JE/aSQqGY4hai7vvc11ctHB/h3brk1RV3lH7g2m/Ls82AAAAFwaBEAEJegAHCwEAASEhARgMgIMAAA=="
+SEVEN_TREE_B64 = "N3q8ryccAASeAmrDowAAAAAAAAAWAAAAAAAAAMGTdczgABkAFV0AMxsIR1hHVyfAUUKWPtoOoH8yIAAAAOAA6gB+XQAAgTMHrg/P2W+8D+vqnL8M3XsjOxwicM7Oo85TopWV5dl64p7zx4yo/FLqN2KgnpfLN2SMeqIwXzr0RY0wLVtQwtGC8UyiiZLDYuPCP/a7szORWHJbd43kjuuDkNn6A0ugKUvckSebvw+pNbpZQVYLT00aGZFTt9PD6hpzAAAAFwYdAQmAhgAHCwEAASEhARgMgOsAAA=="
 
 
 def fixture_7z():
@@ -1835,6 +1836,10 @@ def fixture_7z_lzma1():
 
 def fixture_7z_bcj():
     return base64.b64decode(SEVEN_BCJ_B64)
+
+
+def fixture_7z_tree():
+    return base64.b64decode(SEVEN_TREE_B64)
 
 
 def fixture_mp3_frames():
@@ -1998,6 +2003,7 @@ FIXTURES = [
     ("seven_plain.7z", fixture_7z, ["7Z", "flag.txt", "flag{7z_lzma2_member}"]),
     ("seven_lzma1.7z", fixture_7z_lzma1, ["7Z", "flag{7z_lzma2_member}"]),
     ("seven_bcj.7z", fixture_7z_bcj, ["7Z", "flag{7z_lzma2_member}"]),
+    ("seven_tree.7z", fixture_7z_tree, ["7Z", "flag{tree_a}", "flag{tree_b}"]),
     ("mp3_frames.mp3", fixture_mp3_frames, ["MP3 帧", "flag{mp3bits}"]),
     ("pdf_objects.pdf", fixture_pdf, ["PDF", "flag{pdf_embedded}"]),
     ("zip_descriptor.zip", fixture_zip_descriptor, ["descriptor.txt", "flag{zip_descriptor}"]),

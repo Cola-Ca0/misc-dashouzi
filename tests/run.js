@@ -208,6 +208,11 @@ console.log('\n== 归档 / PDF / MP3 ==');
   const szb = M.analyze(rd('seven_bcj.7z'), 'seven_bcj.7z', {});
   check('7Z x86 BCJ + LZMA2 成员解压', szb.artifacts.some(a => a.name === 'notes.bin' && a.bytes.length === 1024)
     && M.flags(szb).indexOf('flag{7z_lzma2_member}') >= 0, szb.findings.map(f => f.title).join(' | '));
+  const szt = M.analyze(rd('seven_tree.7z'), 'seven_tree.7z', {});
+  const ta = szt.artifacts.find(a => a.name === 'a.txt'), tb = szt.artifacts.find(a => a.name === 'b.txt');
+  check('7Z 目录/空文件不偏移成员映射', !!ta && !!tb && Buffer.from(ta.bytes).toString('latin1').indexOf('flag{tree_a}') >= 0
+    && Buffer.from(tb.bytes).toString('latin1').indexOf('flag{tree_b}') >= 0 && Math.max(...szt.artifacts.map(a => a.bytes.length)) === 13,
+    szt.artifacts.map(a => a.name + ':' + a.bytes.length).join(','));
 
   const mp3 = M.analyze(rd('mp3_frames.mp3'), 'mp3_frames.mp3', {});
   check('MP3 帧表解析', mp3.findings.some(f => f.type === 'mp3_frames'));

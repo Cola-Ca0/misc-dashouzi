@@ -355,22 +355,10 @@
   }
 
   function sevenBitVector(b, p, n) {
-    if (p >= b.length) return null;
-    const all = b[p++];
-    let defined;
-    if (all) defined = new Array(n).fill(true);
-    else {
-      const d = sevenReadBits(b, p, n);
-      if (!d) return null;
-      defined = d.bits; p = d.next;
-    }
-    const bits = [];
-    for (let i = 0; i < n; i++) {
-      if (!defined[i]) { bits.push(false); continue; }
-      if (p >= b.length) return null;
-      bits.push(!!b[p++]);
-    }
-    return { bits, next: p };
+    // FilesInfo 里的布尔向量是纯位流，没有 Digests 那种 allAreDefined 字节
+    const v = sevenReadBits(b, p, n);
+    if (!v) return null;
+    return { bits: v.bits, next: v.next };
   }
 
   function sevenDigests(b, p, n) {
