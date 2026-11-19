@@ -708,9 +708,45 @@ def fixture_sqlite_utf16():
     return _sqlite_bytes(True, "flag{sqlite_utf16}")
 
 
+def fixture_flac():
+    def block(typ, data, last=False):
+        return bytes([(0x80 if last else 0) | typ]) + len(data).to_bytes(3, "big") + data
+
+    packed = (44100 << 44) | (1 << 41) | (15 << 36)   # 2 声道，16 位
+    si = struct.pack(">HH", 4096, 4096) + b"\x00" * 6 + packed.to_bytes(8, "big") + b"\x00" * 16
+    vendor = b"misc-dashouzi"
+    comments = [b"TITLE=flag{flac_vorbis}", b"ARTIST=CTF"]
+    vc = struct.pack("<I", len(vendor)) + vendor + struct.pack("<I", len(comments))
+    for c in comments:
+        vc += struct.pack("<I", len(c)) + c
+    pad = b"\x00" * 16 + b"flag{flac_padding}"
+    app = b"TEST" + b"flag{flac_app}"
+    pic_data = b"\x89PNG\r\n\x1a\n" + b"flag{flac_picture}"
+    mime, desc = b"image/png", b"cover"
+    pic = struct.pack(">I", 3) + struct.pack(">I", len(mime)) + mime
+    pic += struct.pack(">I", len(desc)) + desc
+    pic += struct.pack(">IIII", 1, 1, 24, 0) + struct.pack(">I", len(pic_data)) + pic_data
+    return b"fLaC" + block(0, si) + block(4, vc) + block(1, pad) + block(2, app) + block(6, pic, True) + b"\xff\xf8\x69\x08" + b"\x00" * 16
+
+
 def fixture_git_blob():
     data = b"flag{git_loose_blob}\n"
     return zlib.compress(b"blob " + str(len(data)).encode() + b"\x00" + data, 9)
+
+
+def fixture_unicode_tag():
+    def tags(s):
+        return "".join(chr(0xE0000 + ord(c)) for c in s)
+
+    def vs(s):
+        out = ""
+        for ch in s:
+            b = ord(ch)
+            out += chr(0xFE00 + (b >> 4)) + chr(0xFE00 + (b & 15))
+        return out
+
+    text = "normal-looking sentence " + tags("flag{unicode_tag_stego}") + " end\n" + vs("flag{vs_stego}") + "\n"
+    return text.encode("utf-8")
 
 
 def _git_obj_header(typ, size):
@@ -1446,6 +1482,8 @@ FIXTURES = [
     ("utf16.db", fixture_sqlite_utf16, ["UTF-16le", "flag{sqlite_utf16}"]),
     ("git_blob.obj", fixture_git_blob, ["Git blob 对象", "flag{git_loose_blob}"]),
     ("repo.pack", fixture_git_pack, ["Git packfile", "flag{git_pack_blob}", "flag{git_pack_delta}", "flag{git_pack_commit}"]),
+    ("tagged.flac", fixture_flac, ["FLAC 44100 Hz", "Vorbis 注释", "PADDING 块里有", "内嵌图片", "flag{flac_vorbis}", "flag{flac_padding}", "flag{flac_app}"]),
+    ("unicode_tag.txt", fixture_unicode_tag, ["Unicode Tag 隐写", "flag{unicode_tag_stego}", "变体选择符隐写", "flag{vs_stego}"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),

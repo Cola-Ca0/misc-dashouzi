@@ -962,8 +962,148 @@
     return { text: segs.map(s => s.key).join(''), segments: segs, tones: tones.length };
   }
 
+  // ---------- FLAC ----------
+  // 元数据块之后是音频帧；CTF 常见藏点：Vorbis 注释、PICTURE、非零 PADDING、APPLICATION。
+  const FLAC_BLOCK = { 0: 'STREAMINFO', 1: 'PADDING', 2: 'APPLICATION', 3: 'SEEKTABLE', 4: 'VORBIS_COMMENT', 5: 'CUESHEET', 6: 'PICTURE' };
+
+  function flacVorbis(b, off, len) {
+    const end = Math.min(off + len, b.length);
+    let p = off;
+    const rdLe = () => { if (p + 4 > end) return null; const v = le32(b, p); p += 4; return v; };
+    const vl = rdLe();
+    if (vl == null || p + vl > end) return null;
+    const vendor = utf8(b.subarray(p, p + vl)) || ascii(b.subarray(p, p + vl), vl);
+    p += vl;
+    const count = rdLe();
+    if (count == null) return null;
+    const comments = [];
+    for (let i = 0; i < count && i < 4096; i++) {
+      const l = rdLe();
+      if (l == null || p + l > end) break;
+      const s = utf8(b.subarray(p, p + l));
+      p += l;
+      if (s) comments.push(s);
+    }
+    return { vendor, comments };
+  }
+
+  function auditFLAC(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    if (b.length < 8 || fourcc(b, 0) !== 'fLaC') {
+      return { findings: [finding('L0', 'format', '不是 FLAC')], artifacts, image: null };
+    }
+    let p = 4, last = false;
+    const blocks = [];
+    let streaminfo = null;
+    const flagSeen = new Set();
+    const addFlags = (text, where) => {
+      for (const f of MDZ.flagFindAll(text)) {
+        if (flagSeen.has(f)) continue;
+        flagSeen.add(f);
+        findings.push(finding('L3', 'flac_flag', `${where}里出现 ${f}`, { confidence: 0.99, actual: f }));
+      }
+    };
+    while (!last && p + 4 <= b.length) {
+      const hdr = b[p];
+      last = !!(hdr & 0x80);
+      const type = hdr & 0x7f;
+      const len = (b[p + 1] << 16) | (b[p + 2] << 8) | b[p + 3];
+      p += 4;
+      const off = p;
+      const truncated = p + len > b.length;
+      const end = Math.min(p + len, b.length);
+      blocks.push({ type, name: FLAC_BLOCK[type] || ('#' + type), off, len, truncated });
+      if (truncated) {
+        findings.push(finding('L1', 'flac_block', `元数据块 ${FLAC_BLOCK[type] || type} 越界`, {
+          confidence: 0.9, offset: off, declared: `${len} 字节`, actual: `只剩 ${Math.max(0, b.length - off)} 字节`
+        }));
+      }
+      if (type === 0 && len >= 34) {
+        const packed = ((b[off + 10] << 24) | (b[off + 11] << 16) | (b[off + 12] << 8) | b[off + 13]) >>> 0;
+        const sr = Math.floor(packed / 4096);
+        const ch = ((packed >> 9) & 7) + 1;
+        const bits = ((packed >> 4) & 31) + 1;
+        const total = (packed & 0x0f) * 0x100000000 + be32(b, off + 14);
+        streaminfo = { sr, ch, bits, total, md5: ascii(b.subarray(off + 18, off + 34), 16) };
+      } else if (type === 1) {
+        let nz = 0, first = -1;
+        for (let i = off; i < end; i++) if (b[i]) { nz++; if (first < 0) first = i; }
+        if (nz) {
+          findings.push(finding('L1', 'flac_padding', `PADDING 块里有 ${nz} 个非零字节`, {
+            confidence: 0.95, offset: off,
+            declared: `${len} 字节全零`, actual: `${nz} 字节非零，首个在 0x${hex(first)}`,
+            detail: '标准编码器不会往 padding 里写数据，非零内容通常就是夹带。',
+            preview: ascii(b.subarray(Math.max(off, first), Math.min(end, first + 200)), 200),
+            recipe: `从 0x${hex(off)} 起切 ${len} 字节`
+          }));
+          artifacts.push(artifact('flac-padding.bin', b.subarray(off, end), 'FLAC PADDING 里的非零数据'));
+        }
+      } else if (type === 2) {
+        const id = ascii(b.subarray(off, Math.min(off + 4, end)), 4);
+        const data = b.subarray(off + 4, end);
+        findings.push(finding('L2', 'flac_app', `APPLICATION 块 ${id} · ${data.length} 字节`, {
+          confidence: 0.6, offset: off + 4, actual: ascii(data.subarray(0, 120), Math.min(120, data.length))
+        }));
+        artifacts.push(artifact(`flac-app-${id.replace(/[^\w-]+/g, '_')}.bin`, data, 'FLAC APPLICATION 数据'));
+      } else if (type === 3) {
+        findings.push(finding('L3', 'flac_seek', `SEEKTABLE ${Math.floor(len / 18)} 个定位点`, { confidence: 0.3 }));
+      } else if (type === 4) {
+        const vc = flacVorbis(b, off, len);
+        if (vc) {
+          findings.push(finding('L3', 'flac_tags', `Vorbis 注释 ${vc.comments.length} 条 · vendor ${vc.vendor}`, {
+            confidence: 0.7, offset: off,
+            actual: vc.comments.slice(0, 6).join(' | '),
+            preview: vc.comments.slice(0, 20).join('\n'),
+            recipe: 'metaflac --list --block-type=VORBIS_COMMENT file.flac'
+          }));
+          addFlags(vc.comments.join('\n'), 'Vorbis 注释');
+        }
+      } else if (type === 5) {
+        findings.push(finding('L3', 'flac_cue', `CUESHEET ${len} 字节`, { confidence: 0.4 }));
+      } else if (type === 6) {
+        let q = off;
+        const rd = () => { if (q + 4 > end) return null; const v = be32(b, q); q += 4; return v; };
+        rd(); // picture type
+        const ml = rd();
+        let mime = '';
+        if (ml != null && q + ml <= end) { mime = ascii(b.subarray(q, q + ml), ml); q += ml; }
+        const dl = rd();
+        if (dl != null && q + dl <= end) q += dl;
+        const w = rd(), h = rd();
+        rd(); rd(); // depth / colors
+        const bl = rd();
+        if (bl != null && bl > 0 && q + bl <= end) {
+          const ext = (mime.split('/')[1] || 'bin').replace(/[^a-z0-9]+/gi, '') || 'bin';
+          findings.push(finding('L2', 'flac_picture', `内嵌图片 ${w} × ${h} · ${mime} · ${bl} 字节`, {
+            confidence: 0.8, offset: q, actual: `PICTURE 数据在 0x${hex(q)}`
+          }));
+          artifacts.push(artifact(`flac-picture-${blocks.filter(x => x.type === 6).length}.${ext}`, b.subarray(q, q + bl), 'FLAC 内嵌图片'));
+          addFlags(ascii(b.subarray(q, q + bl), Math.min(bl, 65536)), 'PICTURE');
+        }
+      }
+      p = end;
+      if (truncated) break;
+    }
+    if (streaminfo) {
+      findings.push(finding('L1', 'flac', `FLAC ${streaminfo.sr} Hz · ${streaminfo.ch} 声道 · ${streaminfo.bits} 位 · ${streaminfo.total} 采样`, {
+        confidence: 0.95, offset: 0,
+        actual: `元数据 ${blocks.length} 块，音频帧从 0x${hex(p)} 开始`,
+        detail: `MD5 ${streaminfo.md5 || '(空)'}；块序列：${blocks.map(x => x.name).join(' → ')}`,
+        recipe: 'flac -t / metaflac --list 查结构；这里只解元数据，不解音频帧'
+      }));
+    } else {
+      findings.push(finding('L1', 'flac', `FLAC 元数据 ${blocks.length} 块（缺 STREAMINFO）`, {
+        confidence: 0.6, actual: blocks.map(x => x.name).join(' → ')
+      }));
+    }
+    // 元数据整段再做一次 ASCII flag 扫描：padding/application 里的明文也能抓住
+    addFlags(ascii(b.subarray(0, Math.min(p, b.length)), Math.min(p, 1 << 20)), '元数据区');
+    return { findings, artifacts, image: null, parsed: { streaminfo, blocks, audioStart: p } };
+  }
+
   Object.assign(MDZ, {
     parseWAV, decodeWAVPCM, audioPCMValue, extractAudioBits, scanAudioLSB, waveform, fft, spectrogram,
-    morseDecodePCM, dtmfDecode, parseID3v2, parseID3v1, decodeID3Text, auditWAV, auditMP3
+    morseDecodePCM, dtmfDecode, parseID3v2, parseID3v1, decodeID3Text, auditWAV, auditMP3, auditFLAC
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -1296,6 +1296,31 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== Unicode 不可见字符 ==');
+{
+  const u = fs.readFileSync(path.join(__dirname, 'fixtures', 'unicode_tag.txt'));
+  const r = M.analyze(u, 'unicode_tag.txt', {});
+  const txt = r.findings.map(f => (f.type || '') + ':' + (f.actual || '') + ' ' + (f.title || '')).join('\n');
+  check('Unicode Tag 隐写还原', txt.indexOf('flag{unicode_tag_stego}') >= 0 && r.findings.some(f => f.type === 'unicode_tag'), txt.slice(0, 240));
+  check('变体选择符隐写还原', txt.indexOf('flag{vs_stego}') >= 0 && r.findings.some(f => f.type === 'unicode_vs'), txt.slice(0, 240));
+  check('不可见字符产物', (r.artifacts || []).some(a => a.name === 'unicode-tag.txt') && (r.artifacts || []).some(a => a.name === 'variation-selector.bin'),
+    JSON.stringify((r.artifacts || []).map(a => a.name)));
+}
+console.log('\n== FLAC ==');
+{
+  const f = fs.readFileSync(path.join(__dirname, 'fixtures', 'tagged.flac'));
+  check('FLAC 类型识别', M.detectType(f, 'x.flac').format === 'FLAC', M.detectType(f, 'x.flac').format);
+  const r = M.auditFLAC(f, 'tagged.flac');
+  const si = r.parsed && r.parsed.streaminfo;
+  check('FLAC STREAMINFO', !!si && si.sr === 44100 && si.ch === 2 && si.bits === 16, JSON.stringify(si));
+  const txt = r.findings.map(x => (x.type || '') + ':' + (x.actual || '') + ' ' + (x.title || '') + ' ' + (x.preview || '')).join('\n');
+  check('FLAC Vorbis/PADDING/图片都被解出', txt.indexOf('flag{flac_vorbis}') >= 0 && txt.indexOf('flag{flac_padding}') >= 0
+    && txt.indexOf('flag{flac_app}') >= 0 && txt.indexOf('内嵌图片') >= 0, txt.slice(0, 300));
+  check('FLAC 产物含图片与 padding', (r.artifacts || []).some(a => /^flac-picture-/.test(a.name))
+    && (r.artifacts || []).some(a => a.name === 'flac-padding.bin'), JSON.stringify((r.artifacts || []).map(a => a.name)));
+  const an = M.analyze(f, 'tagged.flac', {});
+  check('FLAC 进入分析链', findingText(an).indexOf('flag{flac_vorbis}') >= 0, findingText(an).slice(0, 160));
+}
 console.log('\n== Git 对象 ==');
 {
   const blob = fs.readFileSync(path.join(__dirname, 'fixtures', 'git_blob.obj'));

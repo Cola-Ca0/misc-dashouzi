@@ -109,10 +109,70 @@
     return { findings, artifacts };
   }
 
+  // Unicode Tag 隐写：U+E0020–E007E 的不可见标签字符，码位减 U+E0000 就是 ASCII
+  function unicodeTagAudit(bytes) {
+    const findings = [], artifacts = [];
+    let s;
+    try { s = MDZ.utf8(bytes); } catch (e) { return { findings, artifacts }; }
+    if (!s) return { findings, artifacts };
+    const out = [];
+    for (const ch of s) {
+      const cp = ch.codePointAt(0);
+      if (cp >= 0xE0020 && cp <= 0xE007E) out.push(cp - 0xE0000);
+    }
+    if (out.length < 8) return { findings, artifacts };
+    const u8 = Uint8Array.from(out.slice(0, 1 << 20));
+    const txt = ascii(u8.subarray(0, Math.min(4096, u8.length)), Math.min(4096, u8.length));
+    findings.push(finding('L4', 'unicode_tag', `Unicode Tag 隐写（${out.length} 个不可见字符）`, {
+      confidence: 0.9,
+      declared: 'U+E0020–U+E007E',
+      actual: txt.slice(0, 200),
+      detail: 'Unicode 标签区字符肉眼不可见，但码位减 U+E0000 就是 ASCII；常见于「看起来正常的句子」里夹带指令或 flag。',
+      preview: txt,
+      recipe: '提取 U+E0020–U+E007E，码位减 0xE0000 转 ASCII',
+      payload: { name: 'unicode-tag.txt', bytes: u8.slice(0) }
+    }));
+    artifacts.push(artifact('unicode-tag.txt', u8, 'Unicode Tag 还原'));
+    return { findings, artifacts };
+  }
+
+  // 变体选择符隐写：VS1–VS16 / VS17–VS240 当 4 位半字节，两个一组还原字节
+  function variationSelectorAudit(bytes) {
+    const findings = [], artifacts = [];
+    let s;
+    try { s = MDZ.utf8(bytes); } catch (e) { return { findings, artifacts }; }
+    if (!s) return { findings, artifacts };
+    const nib = [];
+    for (const ch of s) {
+      const cp = ch.codePointAt(0);
+      if (cp >= 0xFE00 && cp <= 0xFE0F) nib.push(cp - 0xFE00);
+      else if (cp >= 0xE0100 && cp <= 0xE01EF) nib.push(cp - 0xE0100 + 16);
+    }
+    if (nib.length < 8) return { findings, artifacts };
+    const out = [];
+    for (let i = 0; i + 1 < nib.length; i += 2) out.push((nib[i] << 4) | nib[i + 1]);
+    const u8 = Uint8Array.from(out);
+    const pr = MDZ.printableRatio(u8.subarray(0, Math.min(4096, u8.length)));
+    if (pr < 0.85) return { findings, artifacts };
+    const txt = ascii(u8, u8.length);
+    findings.push(finding('L4', 'unicode_vs', `变体选择符隐写（${nib.length} 个半字节 → ${u8.length} 字节）`, {
+      confidence: 0.75,
+      declared: 'VS1–VS16 / VS17–VS240 当 4 位半字节',
+      actual: txt.slice(0, 200),
+      preview: txt,
+      detail: '变体选择符紧跟可见字符时几乎无感知；长串 VS 基本都是夹带。',
+      payload: { name: 'variation-selector.bin', bytes: u8.slice(0) }
+    }));
+    artifacts.push(artifact('variation-selector.bin', u8, '变体选择符还原'));
+    return { findings, artifacts };
+  }
+
   function auditGeneric(bytes, name) {
     const findings = [];
     const zw = zeroWidthAudit(bytes);
-    for (const f of zw.findings) findings.push(f);
+    const tag = unicodeTagAudit(bytes);
+    const vs = variationSelectorAudit(bytes);
+    for (const r of [zw, tag, vs]) for (const f of r.findings) findings.push(f);
     const strs = MDZ.strings(bytes, 6).concat(MDZ.utf16strings(bytes, 6));
     const hits = strs.filter(s => MDZ.flagMatch(s) || /pass(word)?|secret|hint/i.test(s));
     if (hits.length) {
@@ -170,7 +230,7 @@
       }
       if (binSeen.size >= 4) break;
     }
-    return { findings, artifacts: zw.artifacts.concat(binArtifacts), image: null };
+    return { findings, artifacts: zw.artifacts.concat(tag.artifacts, vs.artifacts, binArtifacts), image: null };
   }
 
   function dispatch(bytes, name, type, opts) {
@@ -193,6 +253,7 @@
       case 'BZIP2': return MDZ.auditBzip2(bytes, name, opts);
       case 'TGA': return MDZ.auditTGA(bytes, name, opts);
       case 'PSD': return MDZ.auditPSD(bytes, name, opts);
+      case 'FLAC': return MDZ.auditFLAC(bytes, name);
       case 'LNK': return MDZ.auditLNK(bytes, name, opts);
       case 'OLE': return MDZ.auditOLE(bytes, name, opts);
       case 'PCAP': return MDZ.auditPCAP(bytes, name, opts);

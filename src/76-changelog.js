@@ -35,6 +35,7 @@
       items: [
         'WAV：PCM 8/16/24/32bit、逐采样与逐字节 LSB、波形、FFT 频谱、Morse',
         'MP3：ID3v2.2/2.3/2.4 文本帧、APIC、ID3v1、数据区字符串',
+        'FLAC：STREAMINFO/Vorbis 注释/PICTURE/APPLICATION/非零 PADDING，内嵌图片直接出产物',
         'PCAP / PCAPNG：TCP 乱序重组、DNS、HTTP、TTL 异常、流产物',
         'HTTP 对象提取：Content-Length / chunked / multipart 三种 body 都切成独立产物'
       ]
@@ -47,6 +48,7 @@
         '编码工具页（纯本机、不需要 companion）：Base64/32/58/62/85/91、Hex、URL、HTML、QP、Unicode、UU、ROT13/47、Atbash、摩斯、培根、A1Z26、二/八/十进制字节，全部可编可解',
         '自定义 Base 表：任意字母表编码/解码（换表 Base64、Base32 直接填表），长度 2/4/8/16/32/64 走位流，其余走大整数',
         '编码爆破：常见解码器 + ROT1-25 + Atbash + 三层自动链全跑，按可读性与 flag 命中排序，点一条直接载入',
+        '不可见字符隐写：零宽字符、Unicode Tag（U+E0000 区）、变体选择符（VS1–VS240）三种都还原成文本/产物',
         'flag 模板可改、自动汇总；报告导出（完整/速报/WP）',
         '批量最多 50 个文件、递归 3 层（可在设置里调，最多 64 个文件）、深度扫描',
         '分析在 Web Worker 里跑：大文件不卡界面，随时可取消；Worker 建不起来会自动退回主线程'

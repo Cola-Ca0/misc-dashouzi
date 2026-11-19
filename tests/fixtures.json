@@ -241,6 +241,29 @@
    ]
   },
   {
+   "name": "tagged.flac",
+   "b64": "ZkxhQwAAACIQABAAAAAAAAAACsRC8AAAAAAAAAAAAAAAAAAAAAAAAAAABAAAPg0AAABtaXNjLWRhc2hvdXppAgAAABcAAABUSVRMRT1mbGFne2ZsYWNfdm9yYmlzfQoAAABBUlRJU1Q9Q1RGAQAAIgAAAAAAAAAAAAAAAAAAAABmbGFne2ZsYWNfcGFkZGluZ30CAAASVEVTVGZsYWd7ZmxhY19hcHB9hgAASAAAAAMAAAAJaW1hZ2UvcG5nAAAABWNvdmVyAAAAAQAAAAEAAAAYAAAAAAAAABqJUE5HDQoaCmZsYWd7ZmxhY19waWN0dXJlff/4aQgAAAAAAAAAAAAAAAAAAAAA",
+   "expect": [
+    "FLAC 44100 Hz",
+    "Vorbis 注释",
+    "PADDING 块里有",
+    "内嵌图片",
+    "flag{flac_vorbis}",
+    "flag{flac_padding}",
+    "flag{flac_app}"
+   ]
+  },
+  {
+   "name": "unicode_tag.txt",
+   "b64": "bm9ybWFsLWxvb2tpbmcgc2VudGVuY2Ug86CBpvOggazzoIGh86CBp/OggbvzoIG186CBrvOgganzoIGj86CBr/OggaTzoIGl86CBn/OggbTzoIGh86CBp/OggZ/zoIGz86CBtPOggaXzoIGn86CBr/Oggb0gZW5kCu+4hu+4hu+4hu+4jO+4hu+4ge+4hu+4h++4h++4i++4h++4hu+4h++4g++4he+4j++4h++4g++4h++4hO+4hu+4he+4hu+4h++4hu+4j++4h++4jQo=",
+   "expect": [
+    "Unicode Tag 隐写",
+    "flag{unicode_tag_stego}",
+    "变体选择符隐写",
+    "flag{vs_stego}"
+   ]
+  },
+  {
    "name": "bzip2_two_streams.bz2",
    "b64": "QlpoOTFBWSZTWUbzJDIAAAKLgBAAAACxpBwaIAAimjJpmIQAAAKcqa0Cilgu5IpwoSCN5khkQlpoOTFBWSZTWevO7Z8AAAOLgBAAAAC/hYgaIAAxTAATQgjIMnpqDUvyge+sGyfi7kinChIded2z4A==",
    "expect": [
