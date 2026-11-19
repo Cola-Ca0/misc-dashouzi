@@ -327,8 +327,21 @@
         if (seenOffsets.has(key)) continue;
         seenOffsets.add(key);
         const tail = bytes.subarray(h.offset);
-        const zl = MDZ.lzmaDecompressAlone ? MDZ.lzmaDecompressAlone(tail, { maxOut }) : null;
-        const lout = zl && zl.out;
+        // 先用 64KB 探针：截断的 PSD/Mach-O 头会被误认成 LZMA，
+        // 声明长度可能有十几 MB，直接全解能烧掉几秒。
+        const lprobe = 64 * 1024;
+        let zl = MDZ.lzmaDecompressAlone ? MDZ.lzmaDecompressAlone(tail, { maxOut: lprobe }) : null;
+        let lout = zl && zl.out;
+        if (lout && lout.length >= lprobe) {
+          const ph = lout.subarray(0, 4096);
+          if (MDZ.FLAG_RE.test(ascii(ph, ph.length)) || startsWithMagic(lout) || looksLikeImage(lout)
+            || MDZ.printableRatio(ph) >= 0.9) {
+            zl = MDZ.lzmaDecompressAlone(tail, { maxOut });
+            lout = zl && zl.out;
+          } else {
+            zl = null; lout = null;
+          }
+        }
         if (lout && lout.length) {
           budget.out -= lout.length;
           const head = lout.subarray(0, Math.min(4096, lout.length));
