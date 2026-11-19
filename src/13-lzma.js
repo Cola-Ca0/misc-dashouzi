@@ -384,73 +384,100 @@
       return { out: null, error: '不是 XZ' };
     }
     const maxOut = o.maxOut || 64 * 1024 * 1024;
-    const checkType = ((b[6] << 8) | b[7]) & 0x0F;
-    const checkSize = { 0: 0, 1: 4, 4: 8, 10: 32 }[checkType];
-    if (checkSize === undefined) return { out: null, error: 'XZ 校验类型 ' + checkType + ' 不支持' };
     const warnings = [];
-    if (MDZ.crc32 && MDZ.crc32(b.subarray(6, 8)) !== le32(b, 8)) warnings.push('流头 CRC32 不匹配');
-    let p = 12, blocks = 0, total = 0, error = null;
     const chunks = [];
-    while (p < b.length) {
-      if (b[p] === 0) break;   // index 指示符
-      const headerStart = p;
-      const headerSize = (b[p] + 1) * 4;
-      if (p + headerSize > b.length) { error = 'XZ 块头越界'; break; }
-      const headerEnd = p + headerSize;
-      if (MDZ.crc32 && MDZ.crc32(b.subarray(headerStart, headerEnd - 4)) !== le32(b, headerEnd - 4)) {
-        warnings.push('块头 CRC32 不匹配');
+    let p = 0, blocks = 0, total = 0, error = null, streams = 0, lastCheck = -1;
+    while (p + 12 <= b.length && !error) {
+      if (!(b[p] === 0xFD && b[p + 1] === 0x37 && b[p + 2] === 0x7A && b[p + 3] === 0x58 && b[p + 4] === 0x5A && b[p + 5] === 0x00)) {
+        // 连接流之间的 padding 必须是 4 字节的零
+        if (b[p] === 0 && b[p + 1] === 0 && b[p + 2] === 0 && b[p + 3] === 0) { p += 4; continue; }
+        error = 'XZ 流头魔数不符';
+        break;
       }
-      const flags = b[p + 1];
-      let q = p + 2;
-      let compSize = -1, uncompSize = -1;
-      if (flags & 0x40) { const v = xzVli(b, q); compSize = v.value; q = v.next; }
-      if (flags & 0x80) { const v = xzVli(b, q); uncompSize = v.value; q = v.next; }
-      const nFilters = (flags & 0x03) + 1;
-      let dictProp = -1, deltaDist = 0, bcjX86 = false, unsupported = '';
-      for (let i = 0; i < nFilters; i++) {
-        const id = xzVli(b, q); q = id.next;
-        const ps = xzVli(b, q); q = ps.next;
-        if (id.value < 0 || ps.value < 0 || q + ps.value > headerEnd - 4) { unsupported = '过滤属性越界'; break; }
-        if (id.value === 0x21) {
-          if (ps.value !== 1) unsupported = 'LZMA2 属性长度异常';
-          else dictProp = b[q];
-        } else if (id.value === 0x03) {
-          deltaDist = (b[q] | 0) + 1;
-        } else if (id.value === 0x04 && ps.value === 0) {
-          bcjX86 = true;
-        } else {
-          unsupported = 'XZ 过滤器 0x' + id.value.toString(16) + ' 暂不支持（BCJ 等）';
+      const checkType = ((b[p + 6] << 8) | b[p + 7]) & 0x0F;
+      const checkSize = { 0: 0, 1: 4, 4: 8, 10: 32 }[checkType];
+      if (checkSize === undefined) { error = 'XZ 校验类型 ' + checkType + ' 不支持'; break; }
+      lastCheck = checkType;
+      if (MDZ.crc32 && MDZ.crc32(b.subarray(p + 6, p + 8)) !== le32(b, p + 8)) warnings.push('流头 CRC32 不匹配');
+      streams++;
+      p += 12;
+      while (p < b.length && !error) {
+        if (b[p] === 0) break;   // index 指示符
+        const headerStart = p;
+        const headerSize = (b[p] + 1) * 4;
+        if (p + headerSize > b.length) { error = 'XZ 块头越界'; break; }
+        const headerEnd = p + headerSize;
+        if (MDZ.crc32 && MDZ.crc32(b.subarray(headerStart, headerEnd - 4)) !== le32(b, headerEnd - 4)) warnings.push('块头 CRC32 不匹配');
+        const flags = b[p + 1];
+        let q = p + 2;
+        let compSize = -1, uncompSize = -1;
+        if (flags & 0x40) { const v = xzVli(b, q); compSize = v.value; q = v.next; }
+        if (flags & 0x80) { const v = xzVli(b, q); uncompSize = v.value; q = v.next; }
+        const nFilters = (flags & 0x03) + 1;
+        let dictProp = -1, deltaDist = 0, bcjX86 = false, unsupported = '';
+        for (let i = 0; i < nFilters; i++) {
+          const id = xzVli(b, q); q = id.next;
+          const ps = xzVli(b, q); q = ps.next;
+          if (id.value < 0 || ps.value < 0 || q + ps.value > headerEnd - 4) { unsupported = '过滤属性越界'; break; }
+          if (id.value === 0x21) {
+            if (ps.value !== 1) unsupported = 'LZMA2 属性长度异常';
+            else dictProp = b[q];
+          } else if (id.value === 0x03) {
+            deltaDist = (b[q] | 0) + 1;
+          } else if (id.value === 0x04 && ps.value === 0) {
+            bcjX86 = true;
+          } else {
+            unsupported = 'XZ 过滤器 0x' + id.value.toString(16) + ' 暂不支持（BCJ 等）';
+          }
+          q += ps.value;
         }
-        q += ps.value;
+        if (unsupported) { error = unsupported; break; }
+        if (dictProp < 0) { error = 'XZ 块里没有 LZMA2 过滤器'; break; }
+        const dataStart = headerEnd;
+        const lz = lzma2Decompress(b, dataStart, maxOut - total);
+        if (!lz.out || lz.error) { error = lz.error || 'LZMA2 解压失败'; break; }
+        const data = lz.out;
+        if (bcjX86) bcjX86Decode(data);
+        if (deltaDist > 1) {
+          for (let i = deltaDist; i < data.length; i++) data[i] = (data[i] + data[i - deltaDist]) & 255;
+        }
+        p = dataStart + lz.consumed;
+        const pad = (4 - ((p - dataStart) % 4)) % 4;
+        p += pad;
+        if (p + checkSize > b.length) { error = 'XZ 块校验字段越界'; break; }
+        if (checkType === 1 && MDZ.crc32 && (MDZ.crc32(data) >>> 0) !== le32(b, p)) warnings.push('块数据 CRC32 不匹配');
+        p += checkSize;
+        if (compSize >= 0 && compSize !== lz.consumed) warnings.push('压缩大小字段不一致');
+        if (uncompSize >= 0 && uncompSize !== data.length) warnings.push('解压大小字段不一致');
+        chunks.push(data);
+        total += data.length;
+        blocks++;
+        if (total > maxOut) { error = '解压超过上限'; break; }
+        if (lz.consumed <= 0) { error = 'LZMA2 没有前进'; break; }
       }
-      if (unsupported) { error = unsupported; break; }
-      if (dictProp < 0) { error = 'XZ 块里没有 LZMA2 过滤器'; break; }
-      const dataStart = headerEnd;
-      const lz = lzma2Decompress(b, dataStart, maxOut - total);
-      if (!lz.out || lz.error) { error = lz.error || 'LZMA2 解压失败'; break; }
-      let data = lz.out;
-      if (bcjX86) bcjX86Decode(data);
-      if (deltaDist > 1) {
-        for (let i = deltaDist; i < data.length; i++) data[i] = (data[i] + data[i - deltaDist]) & 255;
+      if (error) break;
+      if (p >= b.length || b[p] !== 0) { error = 'XZ 缺少 index'; break; }
+      const indexStart = p;
+      p++;
+      const nrec = xzVli(b, p);
+      if (!nrec || nrec.value < 0) { error = 'XZ index 截断'; break; }
+      p = nrec.next;
+      for (let i = 0; i < nrec.value; i++) {
+        const a = xzVli(b, p); if (!a || a.value < 0) { error = 'XZ index 记录截断'; break; }
+        const c = xzVli(b, a.next); if (!c || c.value < 0) { error = 'XZ index 记录截断'; break; }
+        p = c.next;
       }
-      p = dataStart + lz.consumed;
-      const pad = (4 - ((p - dataStart) % 4)) % 4;
-      p += pad;
-      if (p + checkSize > b.length) { error = 'XZ 块校验字段越界'; break; }
-      if (checkType === 1 && MDZ.crc32 && (MDZ.crc32(data) >>> 0) !== le32(b, p)) warnings.push('块数据 CRC32 不匹配');
-      p += checkSize;
-      if (compSize >= 0 && compSize !== lz.consumed) warnings.push('压缩大小字段不一致');
-      if (uncompSize >= 0 && uncompSize !== data.length) warnings.push('解压大小字段不一致');
-      chunks.push(data);
-      total += data.length;
-      blocks++;
-      if (total > maxOut) { error = '解压超过上限'; break; }
-      if (lz.consumed <= 0) { error = 'LZMA2 没有前进'; break; }
+      if (error) break;
+      while ((p - indexStart) % 4 !== 0) p++;
+      p += 4;   // index CRC32
+      if (p + 12 > b.length) { error = 'XZ footer 越界'; break; }
+      if (b[p + 10] !== 0x59 || b[p + 11] !== 0x5A) { error = 'XZ footer 魔数不符'; break; }
+      p += 12;
     }
     const out = new Uint8Array(total);
     let at = 0;
     for (const c of chunks) { out.set(c, at); at += c.length; }
-    return { out, error, warnings, blocks, checkType };
+    return { out, error, warnings, blocks, checkType: lastCheck, streams };
   }
 
   Object.assign(MDZ, { lzmaDecompressAlone, lzma2Decompress, xzDecompress });

@@ -854,6 +854,25 @@ def _lzw_encode(data):
     return bytes(out)
 
 
+def fixture_xz_multiblock():
+    data = b"flag{xz_block_one} " * 200 + b"flag{xz_block_two} " * 200
+    try:
+        import subprocess
+        out = subprocess.run(["xz", "--format=xz", "--block-size=1024", "-c"], input=data,
+                             capture_output=True, check=True).stdout
+        if out:
+            return out
+    except Exception:
+        pass
+    return lzma.compress(data, format=lzma.FORMAT_XZ)
+
+
+def fixture_xz_concat():
+    a = lzma.compress(b"flag{xz_first} " * 40)
+    b = lzma.compress(b"flag{xz_second} " * 40, check=lzma.CHECK_CRC32)
+    return a + bytes([0, 0, 0, 0]) + b
+
+
 def fixture_macho():
     flag = b"flag{macho_section}"
     seg_header = struct.pack("<II16sQQQQiiII", 0x19, 72 + 80, b"__TEXT", 0x100000000, 0x1000, 0, 0x200, 7, 5, 1, 0)
@@ -1818,6 +1837,8 @@ FIXTURES = [
     ("lzw.pdf", fixture_pdf_lzw, ["PDF 内嵌文件", "flag{pdf_lzw_stream}"]),
     ("text.xz", fixture_xz_text, ["XZ 解压", "flag{xz_stream}"]),
     ("hello.macho", fixture_macho, ["Mach-O", "flag{macho_section}", "flag{macho_tail}", "__text"]),
+    ("multi.xz", fixture_xz_multiblock, ["XZ 解压", "flag{xz_block_two}"]),
+    ("concat.xz", fixture_xz_concat, ["XZ 解压", "flag{xz_first}", "flag{xz_second}"]),
     ("crc32.xz", fixture_xz_crc32, ["XZ 解压", "flag{xz_crc32}"]),
     ("delta.xz", fixture_xz_delta, ["XZ 解压", "flag{xz_delta_filter}"]),
     ("bcj.xz", fixture_xz_bcj, ["XZ 解压", "flag{xz_bcj_unsupported}"]),

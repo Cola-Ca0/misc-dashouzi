@@ -26,7 +26,7 @@
       group: '压缩与容器',
       items: [
         'zlib / gzip / LZMA / XZ 解压，扫到就自动解压并递归分析',
-        'XZ：LZMA2 块（含未压缩块/状态与字典重置）、Delta 过滤、x86 BCJ、CRC32/CRC64 校验；ARM 等其它 BCJ 明确报暂不支持',
+        'XZ：LZMA2 块（含未压缩块/状态与字典重置）、多块流、连接流与 stream padding、Delta 过滤、x86 BCJ、CRC32/CRC64 校验；ARM 等其它 BCJ 明确报暂不支持',
         'ZIP 条目遍历（stored / deflate）、注释、尾挂',
         '字体 sfnt 表、SQLite 页结构、ELF/PE 节表与 overlay',
         'SQLite 行级扫描：B 树叶页按记录格式解文本列，UTF-8/UTF-16 都读，溢出页也跟，结果导出 sqlite-rows.txt',

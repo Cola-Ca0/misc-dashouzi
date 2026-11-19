@@ -103,7 +103,7 @@ Security boundaries: loopback only, `X-MDZ-Token` on every request, CORS limited
 ```bash
 python build.py            # inline src/ into the single HTML, regenerate fixtures
 python build.py --no-bg    # release build without the wallpaper image
-node tests/run.js          # 463 checks
+node tests/run.js          # 467 checks
 node tests/cdp-smoke.js    # Edge CDP smoke (needs Edge)
 ```
 

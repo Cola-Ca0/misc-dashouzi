@@ -216,10 +216,10 @@ python build.py
 # 发布版：不内联壁纸（仓库里的成品就是这个）
 python build.py --no-bg
 
-# 回归测试（单元向量 + 112 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
+# 回归测试（单元向量 + 114 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
 node tests/run.js
 
-# 浏览器自检（当前 132 项）
+# 浏览器自检（当前 134 项）
 msedge --headless=new --dump-dom "file:///.../misc-dashouzi.html?selftest=1"
 
 # 浏览器冒烟（需要 Edge；验证自检、上传、位平面缩放、批量、双图对比、零尺寸、50 文件上限、Worker）

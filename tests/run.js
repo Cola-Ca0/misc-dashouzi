@@ -1335,6 +1335,13 @@ console.log('\n== XZ / LZMA2 ==');
   const wrapped = Buffer.concat([Buffer.alloc(64), x]);
   const an2 = M.analyze(wrapped, 'wrapped.bin', {});
   check('文件中间的 XZ 流会被解压', M.flags(an2).indexOf('flag{xz_stream}') >= 0, M.flags(an2).join(' '));
+  const multi = M.xzDecompress(rd('multi.xz'));
+  check('XZ 多块流', !multi.error && multi.blocks >= 1 && Buffer.from(multi.out).toString('latin1').indexOf('flag{xz_block_two}') >= 0,
+    multi.error || ('blocks ' + multi.blocks));
+  const concat = M.xzDecompress(rd('concat.xz'));
+  const cs = Buffer.from(concat.out || []).toString('latin1');
+  check('XZ 连接流与 padding', !concat.error && concat.streams === 2 && cs.indexOf('flag{xz_first}') >= 0 && cs.indexOf('flag{xz_second}') >= 0,
+    concat.error || ('streams ' + concat.streams));
 }
 console.log('\n== PDF LZW ==');
 {
