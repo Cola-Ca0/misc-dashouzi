@@ -62,6 +62,10 @@
         const r = MDZ.a85decode(s);
         if (!r || !r.length) return { error: 'ASCII85 解码失败' };
         cur = r;
+      } else if (name === 'LZWDecode' || name === 'LZW') {
+        const out = MDZ.tiffLZW ? MDZ.tiffLZW(cur, Math.min(cur.length * 20 + 4096, 128 * 1024 * 1024)) : null;
+        if (!out || !out.length) return { error: 'LZWDecode 解压失败' };
+        cur = out;
       } else if (name === 'DCTDecode' || name === 'DCT') {
         return { data: cur, jpeg: true };
       } else {

@@ -318,6 +318,14 @@
    ]
   },
   {
+   "name": "lzw.pdf",
+   "b64": "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvRW1iZWRkZWRGaWxlIC9GaWx0ZXIgL0xaV0RlY29kZSAvTGVuZ3RoIDU4ID4+CnN0cmVhbQqAGY2GEzns4GQzF82Ho7l85nQ5GUwm0+go4GEyGQ0m4ziCLxmNx2PxqOR6MSSRSeQyaQSWRyuXyWAgCmVuZHN0cmVhbQplbmRvYmoKMiAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMyAwIFIgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFtdIC9Db3VudCAwID4+CmVuZG9iagp0cmFpbGVyCjw8IC9Sb290IDIgMCBSID4+CiUlRU9GCg==",
+   "expect": [
+    "PDF 内嵌文件",
+    "flag{pdf_lzw_stream}"
+   ]
+  },
+  {
    "name": "bzip2_two_streams.bz2",
    "b64": "QlpoOTFBWSZTWUbzJDIAAAKLgBAAAACxpBwaIAAimjJpmIQAAAKcqa0Cilgu5IpwoSCN5khkQlpoOTFBWSZTWevO7Z8AAAOLgBAAAAC/hYgaIAAxTAATQgjIMnpqDUvyge+sGyfi7kinChIded2z4A==",
    "expect": [

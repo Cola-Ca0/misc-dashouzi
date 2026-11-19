@@ -817,6 +817,55 @@ def fixture_mp4():
     mdat = _mp4_box(b"mdat", b"\x00" * 32)
     return ftyp + moov + free + mdat + b"flag{mp4_tail}"
 
+def _lzw_encode(data):
+    dict_ = {bytes([i]): i for i in range(256)}
+    next_code = 258
+    width = 9
+    out = bytearray()
+    state = {"buf": 0, "cnt": 0}
+
+    def emit(code):
+        state["buf"] = (state["buf"] << width) | code
+        state["cnt"] += width
+        while state["cnt"] >= 8:
+            state["cnt"] -= 8
+            out.append((state["buf"] >> state["cnt"]) & 255)
+        state["buf"] &= (1 << state["cnt"]) - 1
+
+    emit(256)
+    w = b""
+    for byte in data:
+        wc = w + bytes([byte])
+        if wc in dict_:
+            w = wc
+        else:
+            emit(dict_[w])
+            if next_code < 4096:
+                dict_[wc] = next_code
+                next_code += 1
+                if next_code == (1 << width) - 1 and width < 12:
+                    width += 1
+            w = bytes([byte])
+    if w:
+        emit(dict_[w])
+    emit(257)
+    if state["cnt"]:
+        out.append((state["buf"] << (8 - state["cnt"])) & 255)
+    return bytes(out)
+
+
+def fixture_pdf_lzw():
+    NL = bytes([10])
+    payload = b"flag{pdf_lzw_stream}" + NL + b"padding " * 8
+    enc = _lzw_encode(payload)
+    head = b"%PDF-1.4" + NL
+    obj1 = (b"1 0 obj" + NL + b"<< /Type /EmbeddedFile /Filter /LZWDecode /Length " + str(len(enc)).encode()
+            + b" >>" + NL + b"stream" + NL + enc + NL + b"endstream" + NL + b"endobj" + NL)
+    obj2 = b"2 0 obj" + NL + b"<< /Type /Catalog /Pages 3 0 R >>" + NL + b"endobj" + NL
+    obj3 = b"3 0 obj" + NL + b"<< /Type /Pages /Kids [] /Count 0 >>" + NL + b"endobj" + NL
+    return head + obj1 + obj2 + obj3 + b"trailer" + NL + b"<< /Root 2 0 R >>" + NL + b"%%EOF" + NL
+
+
 def fixture_tiff_lzw():
     from PIL import Image
     im = Image.new("RGB", (16, 16), (0, 0, 0))
@@ -856,7 +905,7 @@ def fixture_pcx():
             data += bytes([0xC0 | w, y])
     pal = bytearray(768)
     pal[15:18] = bytes([255, 0, 0])
-    return bytes(hdr) + bytes(data) + b"" + bytes(pal) + b"flag{pcx_tail}"
+    return bytes(hdr) + bytes(data) + bytes([0x0C]) + bytes(pal) + b"flag{pcx_tail}"
 
 
 def fixture_java_class():
@@ -1607,6 +1656,7 @@ FIXTURES = [
     ("tiny.pcx", fixture_pcx, ["PCX 16 × 16", "flag{pcx_tail}"]),
     ("lzw.tif", fixture_tiff_lzw, ["TIFF", "LZW", "flag{tiff_tail}"]),
     ("packbits.tif", fixture_tiff_packbits, ["TIFF", "PackBits"]),
+    ("lzw.pdf", fixture_pdf_lzw, ["PDF 内嵌文件", "flag{pdf_lzw_stream}"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),

@@ -51,7 +51,7 @@ One rule runs through all six: **declared quantity ≠ actual quantity**.
 
 **Traffic** — PCAP / PCAPNG: TCP reassembly across reordering and wraparound, DNS, HTTP, **HTTP object extraction** (Content-Length / chunked / multipart → separate artifacts), USB HID keyboard traffic, ICMP/ICMPv6 payloads, TTL anomalies, trailing data
 
-**Containers** — ZIP (central directory, data descriptors, method 14 LZMA, ZIP64), TAR, RAR (RAR4/RAR5 file tables, stored extraction), 7Z, bzip2, ISO9660, MP4/MOV box trees, OLE2 compound documents (stream extraction), PDF (objects, incremental updates, embedded files, images, /JS). Embedded containers found mid-file are carved out and analyzed recursively.
+**Containers** — ZIP (central directory, data descriptors, method 14 LZMA, ZIP64), TAR, RAR (RAR4/RAR5 file tables, stored extraction), 7Z, bzip2, ISO9660, MP4/MOV box trees, OLE2 compound documents (stream extraction), PDF (objects, incremental updates, embedded files, images, /JS, Flate/ASCII85/LZW filters). Embedded containers found mid-file are carved out and analyzed recursively.
 
 **Encoding** — an in-page codec toolbox: Base64/Base64URL/32/58/62/85/91, hex, binary/octal/decimal bytes, URL, HTML entities, quoted-printable, Unicode escapes, UUencode, ROT13/47, Atbash, Morse, Bacon, A1Z26 — encode and decode both ways. Custom Base alphabets are supported (bit-stream for 2/4/8/16/32/64-char tables, big-integer otherwise). **Encoding brute force** runs every decoder plus ROT1–25/Atbash, six common custom tables, two-layer combinations and the 3-level auto chain, then ranks by readability and flag hits. Everything runs in-page with no companion bridge.
 
@@ -103,7 +103,7 @@ Security boundaries: loopback only, `X-MDZ-Token` on every request, CORS limited
 ```bash
 python build.py            # inline src/ into the single HTML, regenerate fixtures
 python build.py --no-bg    # release build without the wallpaper image
-node tests/run.js          # 417 checks
+node tests/run.js          # 419 checks
 node tests/cdp-smoke.js    # Edge CDP smoke (needs Edge)
 ```
 

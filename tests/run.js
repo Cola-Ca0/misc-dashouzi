@@ -1296,6 +1296,13 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== PDF LZW ==');
+{
+  const p = fs.readFileSync(path.join(__dirname, 'fixtures', 'lzw.pdf'));
+  const r = M.auditPDF(p, 'lzw.pdf');
+  check('PDF LZWDecode 解出内嵌文件', r.findings.some(f => f.type === 'pdf_embedded')
+    && findingText(r).indexOf('flag{pdf_lzw_stream}') >= 0, findingText(r).slice(0, 200));
+}
 console.log('\n== TIFF 像素 ==');
 {
   const lzw = fs.readFileSync(path.join(__dirname, 'fixtures', 'lzw.tif'));

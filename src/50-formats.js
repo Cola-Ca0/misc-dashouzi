@@ -1750,6 +1750,6 @@
     isZIP, parseZIP, unzipEntry, auditZIP, b64decode,
     isTIFF, auditTIFF, isWEBP, auditWEBP,
     parseTGA, decodeTGA, auditTGA,
-    parsePSD, auditPSD, decodePCX, auditPCX
+    parsePSD, auditPSD, decodePCX, auditPCX, tiffLZW
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
