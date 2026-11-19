@@ -266,7 +266,7 @@
       case 'TEXT': return auditGeneric(bytes, name);
       default: {
         // 松散 Git 对象没有魔数，只有 zlib 解压后的 "<type> <size>\0" 头
-        const g = MDZ.auditGitObject ? MDZ.auditGitObject(bytes, name) : null;
+        const g = MDZ.auditGitObject(bytes, name);
         return g || auditGeneric(bytes, name);
       }
     }

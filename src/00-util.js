@@ -70,6 +70,18 @@
     return s;
   }
 
+  // ID3 / PSD / SQLite 共用：大端 UTF-16，遇到 NUL 结束（这些都是有长度字段的定长串）
+  function utf16be(bytes) {
+    const b = toU8(bytes);
+    let s = '';
+    for (let i = 0; i + 1 < b.length; i += 2) {
+      const c = (b[i] << 8) | b[i + 1];
+      if (c === 0) break;
+      s += String.fromCharCode(c);
+    }
+    return s;
+  }
+
   function cstr(bytes, start) {
     const b = toU8(bytes);
     let end = start === undefined ? 0 : start;
@@ -672,7 +684,7 @@
 
   Object.assign(MDZ, {
     VERSION,
-    toU8, hex, hex32, bytesToHex, ascii, utf8, utf16le, cstr,
+    toU8, hex, hex32, bytesToHex, ascii, utf8, utf16le, utf16be, cstr,
     entropy, printableRatio, strings, utf16strings,
     fnv1a, sha256,
     detectType, detectDamagedHeader, alternateName, startsWith, finding, artifact, safeSlice, concatBytes,

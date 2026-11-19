@@ -98,10 +98,12 @@
 **TIFF / WebP / 其它格式（基础）**
 - TIFF：IFD/ExifIFD/GPS/IFD1 标签、内嵌 JPEG 提取、原始字符串兜底
 - WebP：RIFF chunk 遍历、VP8X 画布、EXIF/XMP、ANIM/ANMF、RIFF 后附加
-- TAR / RAR / 7Z / PDF：成员遍历与提取、RAR4/RAR5 文件表、7Z 未压缩文件表、PDF 对象/增量更新/内嵌文件/图片/JS
-- 字体（sfnt 表）、SQLite（页结构）、ELF/PE（节表与 overlay）
+- TGA / PSD：TGA 真彩/RLE/footer；PSD 图层记录、隐藏图层预览与 BMP 导出、PackBits/ZIP 图层、合成图 R/G/B、尾部附加
+- TAR / RAR / 7Z / bzip2 / OLE2 / PDF：成员遍历与提取、RAR4/RAR5 文件表、7Z 未压缩文件表、OLE 流提取、PDF 对象/增量更新/内嵌文件/图片/JS
+- 字体（sfnt 表）、SQLite（B 树叶页逐行扫描，UTF-8/UTF-16、溢出页）、Git（松散对象 + packfile/OFS_DELTA）、ELF/PE（节表与 overlay）、Windows 快捷方式（LNK）
 
 **流水线**
+- 不可见字符：零宽字符、Unicode Tag（U+E0000 区）、变体选择符（VS1–VS240）都还原成文本/产物
 - 递归分析（深度 ≤3，按 SHA-256 去重，产物上限可调）；LSB 提取出来的 ZIP/PNG 等容器也会自动接上拆包（位平面 → zip → 文本一条链走完）
 - 内嵌容器雕刻：文件中间/尾部拼接的 zip/png/jpeg 切出来继续递归
 - 每个发现附偏移、声明/实际、证据、复现步骤、可下载载荷
@@ -115,8 +117,10 @@
 - LSB 提取参数面：通道序含 AGBR/ARGB/ABGR 等 A 打头的四位序，支持 bit1+bit2 多位组合，行序/列序 × MSB/LSB 打包
 - **分析跑在 Web Worker 里**：大文件不冻界面，随时可取消；Worker 建不起来会自动退回主线程
 
-**编码侦探 / 条码 / 画字 / 频域**
-- 单层解码：hex / base64 / base32 / ascii85 / base91 / uuencode / URL / HTML 实体
+**编码工具 / 编码侦探 / 条码 / 画字 / 频域**
+- 编码工具页（纯本机，不需要 companion）：Base64/Base64URL/32/58/62/85/91、hex、二/八/十进制字节、URL、HTML、Quoted-Printable、Unicode 转义、UUencode、ROT13/47、Atbash、摩斯、培根、A1Z26，全部可编可解
+- 自定义 Base 表：任意 2–94 字符字母表；2/4/8/16/32/64 字符走位流，其它长度走大整数
+- 编码爆破：全部解码器 + ROT1–25/Atbash + 6 张常见换表 + 两层组合 + 三层自动链，按可读性与 flag 命中排序
 - 自动解码链：最多 3 层；`rot13` / `rot47` / `atbash` 作为显式变换不进自动链
 - **解出来不是文本而是文件时**（base64 的 PNG、hex 的 ZIP…）切成产物并继续递归
 - 一维条码：EAN-13 / EAN-8 / Code128 / Code39，横向与竖向扫描线，靠校验位 / mod-103 / 起止星号压误报
@@ -212,10 +216,10 @@ python build.py
 # 发布版：不内联壁纸（仓库里的成品就是这个）
 python build.py --no-bg
 
-# 回归测试（单元向量 + 76 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
+# 回归测试（单元向量 + 90 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
 node tests/run.js
 
-# 浏览器自检（当前 96 项）
+# 浏览器自检（当前 110 项）
 msedge --headless=new --dump-dom "file:///.../misc-dashouzi.html?selftest=1"
 
 # 浏览器冒烟（需要 Edge；验证自检、上传、位平面缩放、批量、双图对比、零尺寸、50 文件上限、Worker）
@@ -240,12 +244,12 @@ src/15-bar.js       EAN-13 / EAN-8 / Code128 / Code39
 src/20-png.js       PNG chunk/解码/尺寸恢复/修复/审计
 src/30-jpeg.js      JPEG 段/EXIF/缩略图/审计
 src/40-bmp.js       BMP 头/夹缝/像素解码
-src/50-formats.js   GIF/ICO/SVG/ZIP/TIFF/WebP
-src/52-carrier.js   字体 / SQLite / ELF / PE 审计
+src/50-formats.js   GIF/ICO/SVG/ZIP/TIFF/WebP/TGA/PSD
+src/52-carrier.js   字体 / SQLite 行 / Git / ELF / PE / LNK / OLE 审计
 src/53-pdf.js       PDF 结构审计
 src/55-archives.js  TAR / RAR / 7Z
 src/60-scan.js      位平面/LSB 扫描与打分、渲染
-src/62-audio.js     WAV/MP3 审计、音频 LSB、Morse、FFT 频谱
+src/62-audio.js     WAV/MP3/FLAC 审计、音频 LSB、Morse、DTMF、FFT 频谱
 src/64-pcap.js      pcap/pcapng、TCP 重组、DNS/HTTP/USB/ICMP
 src/65-diff.js      双图 XOR/绝对差/差值
 src/66-spectrum.js  频域审计

@@ -2566,6 +2566,14 @@
     const syncAlpha = () => { alpha.style.display = isCustom() ? '' : 'none'; };
     sel.addEventListener('change', syncAlpha);
     syncAlpha();
+    const labelById = {};
+    for (const g of M.CODEC_OPS || []) for (const it of g.items) labelById[it.id] = it.label;
+    const codecLabel = id => {
+      if (/^rot\d+$/.test(id)) return id.toUpperCase();
+      if (id === 'atbash') return 'Atbash';
+      const s = labelById[id + '-decode'] || labelById[id] || id;
+      return s.replace(/ 解码$/, '');
+    };
     let last = null;
     const setNote = (t, bad) => { note.textContent = t; note.style.color = bad ? 'var(--danger)' : ''; };
     const run = () => {
@@ -2584,9 +2592,7 @@
     });
     $('#codec-copy').addEventListener('click', () => {
       if (!out.value) return;
-      const done = () => setNote('已复制');
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).then(done, () => setNote('复制失败：浏览器不给剪贴板权限', true));
-      else setNote('复制失败：浏览器不支持剪贴板 API', true);
+      copyText(out.value).then(ok => setNote(ok ? '已复制' : '复制失败：浏览器不给剪贴板权限', !ok));
     });
     $('#codec-dl').addEventListener('click', () => {
       if (!last || !last.ok) { setNote('还没有结果可下载', true); return; }
@@ -2596,16 +2602,24 @@
     $('#codec-load').addEventListener('click', () => {
       const it = state.items.find(x => x.bytes) || (state.bytes ? { bytes: state.bytes } : null);
       if (!it) { setNote('当前没有文件', true); return; }
-      const t = M.utf8(it.bytes);
-      if (t != null && M.printableRatio(it.bytes.subarray(0, 4096)) > 0.85) inp.value = t;
-      else inp.value = M.hexEncode(it.bytes.subarray(0, 4096)) + (it.bytes.length > 4096 ? ' …' : '');
-      setNote(`已读入当前文件（${it.bytes.length} 字节）`);
+      const textCap = 1 << 20, binCap = 65536;
+      const t = it.bytes.length > textCap * 4
+        ? new TextDecoder('utf-8').decode(it.bytes.subarray(0, textCap))
+        : M.utf8(it.bytes);
+      if (t != null && M.printableRatio(it.bytes.subarray(0, 4096)) > 0.85) {
+        inp.value = t.length > textCap ? t.slice(0, textCap) : t;
+        setNote(`已读入文本（${Math.min(t.length, textCap)}/${it.bytes.length} 字节）`);
+      } else {
+        const take = it.bytes.subarray(0, binCap);
+        inp.value = M.hexEncode(take);
+        setNote(`二进制文件：已读入前 ${take.length}/${it.bytes.length} 字节的 hex`);
+      }
     });
     $('#codec-brute').addEventListener('click', () => {
       const list = M.bruteDecode(inp.value);
       results._list = list;
       results.innerHTML = list.length ? list.map((r, i) =>
-        `<div class="codec-hit" data-hit="${i}"><span class="kind">${esc(r.path ? r.path.join(' → ') : r.kind)}</span><span class="score">${r.score.toFixed(1)}</span><pre>${esc(r.text.slice(0, 400))}</pre></div>`
+        `<div class="codec-hit" data-hit="${i}"><span class="kind">${esc(r.path ? r.path.map(codecLabel).join(' → ') : codecLabel(r.kind))}</span><span class="score">${r.score.toFixed(1)}</span><pre>${esc(r.text.slice(0, 400))}</pre></div>`
       ).join('') : '<div class="cp-note">没有解出可读结果。可以试试自定义 Base 表，或者只粘一段可疑内容再爆破。</div>';
       setNote(`爆破 ${list.length} 条候选（按可读性 + flag 命中打分），点一条载入结果`);
     });
@@ -2615,7 +2629,7 @@
       const r = results._list[parseInt(hit.dataset.hit, 10)];
       if (!r) return;
       out.value = r.text; last = { ok: true, text: r.text };
-      setNote('已载入候选：' + (r.path ? r.path.join(' → ') : r.kind));
+      setNote('已载入候选：' + (r.path ? r.path.map(codecLabel).join(' → ') : codecLabel(r.kind)));
     });
   }
 

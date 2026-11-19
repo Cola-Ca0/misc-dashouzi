@@ -1039,13 +1039,8 @@
   // ---------- PSD ----------
   // 头部 + 色彩模式数据 + 图像资源 + 图层与蒙版 + 合成图像。
   // CTF 看点：隐藏图层、图层名、资源段字符串、合成图之后的夹带。
+  const PSD_ALPHA = -1;   // 图层通道 id -1 = 透明度
   const PSD_MODE = { 0: '位图', 1: '灰度', 2: '索引', 3: 'RGB', 4: 'CMYK', 7: '多通道', 8: '双色调', 9: 'Lab' };
-
-  function psdUtf16be(b, o, n) {
-    let s = '';
-    for (let i = 0; i + 1 < n; i += 2) s += String.fromCharCode((b[o + i] << 8) | b[o + i + 1]);
-    return s;
-  }
 
   function psdPackBits(src, off, count, out, outOff, rowLen) {
     let i = off, end = Math.min(off + count, src.length), o = outOff;
@@ -1104,7 +1099,7 @@
       if (!decoded[0] || !decoded[1] || !decoded[2]) return null;
       R.set(decoded[0]); G.set(decoded[1]); B.set(decoded[2]);
     }
-    if (decoded[-1]) A.set(decoded[-1]);
+    if (decoded[PSD_ALPHA]) A.set(decoded[PSD_ALPHA]);
     return { width: w, height: h, bitDepth: 8, colorType: 'PSD', channels: { R, G, B, A }, error: null };
   }
 
@@ -1232,7 +1227,7 @@
             if (!(dl >= 0) || p + dl > extraEnd) break;
             if (key === 'luni' && dl >= 4) {
               const n2 = rd32(b, p);
-              if (n2 >= 2 && n2 <= dl && p + 4 + n2 <= extraEnd) name = psdUtf16be(b, p + 4, n2);
+              if (n2 >= 2 && n2 <= dl && p + 4 + n2 <= extraEnd) name = MDZ.utf16be(b.subarray(p + 4, p + 4 + n2));
             } else if (key === 'lsct' && dl >= 4) {
               section = rd32(b, p);
             } else if (key === 'TySh') {
@@ -1274,8 +1269,9 @@
     const n = w * h;
     const bp = depth >= 16 ? 2 : 1;
     let p = info.compStart;
-    if (!(p > 0) || p + 2 > b.length) return { image: null, end: null };
-    if (nch < 1 || nch > 56 || n <= 0 || n > 6e6 || depth > 16) return { image: null, end: null };
+    if (!(p > 0) || p + 2 > b.length) return { image: null, end: null, reason: '合成图起点越界' };
+    if (nch < 1 || nch > 56 || n <= 0 || n > 6e6) return { image: null, end: null, reason: '合成图尺寸/通道异常' };
+    if (depth > 16) return { image: null, end: null, reason: `合成图 ${depth} 位浮点暂不预览` };
     const compression = rd16(b, p); p += 2;
     const planes = [];
     if (compression === 0) {
@@ -1287,7 +1283,7 @@
     } else if (compression === 1) {
       const cntLen = psb ? 4 : 2;
       const tableLen = h * nch * cntLen;
-      if (p + tableLen > b.length) return { image: null, end: null };
+      if (p + tableLen > b.length) return { image: null, end: null, reason: '合成图 RLE 行表越界' };
       const counts = [];
       let total = 0;
       for (let i = 0; i < h * nch; i++) {
@@ -1307,8 +1303,26 @@
         planes.push(plane);
       }
       p = dataStart + total;
+    } else if (compression === 2 || compression === 3) {
+      // 合成图 ZIP：一个 zlib 流里按通道平面顺序排列；compression 3 多一层行内预测
+      const z = MDZ.inflateZlib(b, p, Math.max(n * nch * bp * 2, 1 << 20));
+      if (!z.out || !z.consumed) return { image: null, end: null, reason: '合成图 ZIP 解压失败' };
+      const need = n * nch * bp;
+      if (z.out.length < need) return { image: null, end: p + z.consumed, reason: `合成图 ZIP 只解出 ${z.out.length}/${need} 字节` };
+      for (let c = 0; c < nch; c++) {
+        const plane = z.out.subarray(c * n * bp, (c + 1) * n * bp);
+        if (compression === 3) {
+          const rowBytes = w * bp;
+          for (let y = 0; y < h; y++) {
+            const baseOff = y * rowBytes;
+            for (let i = 1; i < rowBytes; i++) plane[baseOff + i] = (plane[baseOff + i] + plane[baseOff + i - 1]) & 255;
+          }
+        }
+        planes.push(plane);
+      }
+      p += z.consumed;
     } else {
-      return { image: null, end: null };
+      return { image: null, end: null, reason: '合成图压缩方式 ' + compression + ' 不支持' };
     }
     info.compression = compression;
     const base = info.mode === 4 ? 4 : (info.mode === 1 || info.mode === 2 || info.mode === 0 || info.mode === 8 ? 1 : 3);
@@ -1317,9 +1331,10 @@
       const s = psdSample(planes[i], w, h, depth);
       if (!s) continue;
       if (i < base) decoded[i] = s;
-      else if (i === base) decoded[-1] = s;
+      else if (i === base) decoded[PSD_ALPHA] = s;
     }
-    return { image: psdImage(w, h, info.mode, decoded, info.palette), end: Math.min(p, b.length) };
+    const image = psdImage(w, h, info.mode, decoded, info.palette);
+    return { image, end: Math.min(p, b.length), reason: image ? null : '合成图模式/位深暂无预览' };
   }
 
   function auditPSD(input, name) {
@@ -1391,6 +1406,12 @@
     const fm = MDZ.flagMatch(names + '\n' + resStr.join('\n'));
     if (fm) findings.push(finding('L3', 'psd_flag', `图层名/资源段出现 ${fm}`, { confidence: 0.99, actual: fm, preview: names.slice(0, 400) }));
     const comp = psdDecodeComposite(b, info);
+    if (!comp.image && comp.reason) {
+      findings.push(finding('L1', 'psd_composite_skip', comp.reason, {
+        confidence: 0.8,
+        detail: '合成图没解出来不代表文件坏了：图层预览和隐藏图层仍可用；需要完整合成图时用 Photoshop / psd-tools 导出。'
+      }));
+    }
     if (comp.end != null && comp.end < b.length) {
       const tr = b.subarray(comp.end);
       findings.push(finding('L1', 'psd_trailer', `合成图像之后还有 ${tr.length} 字节`, {
@@ -1413,6 +1434,6 @@
     isZIP, parseZIP, unzipEntry, auditZIP, b64decode,
     isTIFF, auditTIFF, isWEBP, auditWEBP,
     parseTGA, decodeTGA, auditTGA,
-    parsePSD, auditPSD, psdPackBits
+    parsePSD, auditPSD
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

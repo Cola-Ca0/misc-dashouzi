@@ -34,7 +34,7 @@ One rule runs through all six: **declared quantity ≠ actual quantity**.
 
 ## What it covers
 
-**Images** — PNG / JPEG / GIF / BMP / ICO / SVG / TIFF / WebP
+**Images** — PNG / JPEG / GIF / BMP / ICO / SVG / TIFF / WebP / TGA / PSD
 - PNG: chunks, CRC, dimension recovery from IHDR-CRC and IDAT length, double zlib, extra scanlines, tEXt/zTXt/iTXt (with nested hex/base58/base64), palette (PLTE) analysis, Adam7, APNG frames, fake chunk names one letter off, ASCII in broken CRC fields, data after IEND
 - JPEG: segments, EXIF (all XP\* tags, UserComment, GPS, IFD1 thumbnail), multiple EXIF blocks, entropy-data MCU self-check
 - BMP / GIF / ICO / SVG: header-vs-file-size reconciliation, palette gap, per-frame LZW decode, interlaced frames, embedded base64 images
@@ -47,15 +47,15 @@ One rule runs through all six: **declared quantity ≠ actual quantity**.
 - **Damaged magic**: first byte deleted, first few bytes deleted, or one byte wrong. The tool guesses the format, verifies structurally, and offers "repair and re-analyze" — the original file is never modified
 - **Lying dimensions**: BMP (pixel-region length ÷ aligned row width), JPEG (SOF sampling × DRI restart intervals → MCU count → factor pairs), PNG (IHDR CRC / IDAT length), GIF (LZW decodes more rows than declared). One click rewrites the header and re-analyzes
 
-**Audio** — WAV (PCM 8/16/24/32-bit, per-sample and per-byte LSB, waveform, FFT spectrum, Morse), MP3 (ID3v2.2/2.3/2.4, APIC, ID3v1, frame-header bit channels, plus waveform/spectrum via the browser's own decoder)
+**Audio** — WAV (PCM 8/16/24/32-bit, per-sample and per-byte LSB, waveform, FFT spectrum, Morse, DTMF), MP3 (ID3v2.2/2.3/2.4, APIC, ID3v1, frame-header bit channels), FLAC (STREAMINFO, Vorbis comments, PICTURE, APPLICATION, non-zero PADDING)
 
 **Traffic** — PCAP / PCAPNG: TCP reassembly across reordering and wraparound, DNS, HTTP, **HTTP object extraction** (Content-Length / chunked / multipart → separate artifacts), USB HID keyboard traffic, ICMP/ICMPv6 payloads, TTL anomalies, trailing data
 
-**Containers** — ZIP (central directory, data descriptors, method 14 LZMA), TAR, RAR (RAR4/RAR5 file tables, stored extraction), 7Z, PDF (objects, incremental updates, embedded files, images, /JS). Embedded containers found mid-file are carved out and analyzed recursively.
+**Containers** — ZIP (central directory, data descriptors, method 14 LZMA, ZIP64), TAR, RAR (RAR4/RAR5 file tables, stored extraction), 7Z, bzip2, OLE2 compound documents (stream extraction), PDF (objects, incremental updates, embedded files, images, /JS). Embedded containers found mid-file are carved out and analyzed recursively.
 
-**Encoding** — auto-decode chain over `hex / base64 / base32 / ascii85 / base91 / uuencode / URL / HTML entities`, up to 3 levels. If a decoded payload is actually a file (PNG/ZIP/PDF/…), it becomes an artifact and is analyzed recursively.
+**Encoding** — an in-page codec toolbox: Base64/Base64URL/32/58/62/85/91, hex, binary/octal/decimal bytes, URL, HTML entities, quoted-printable, Unicode escapes, UUencode, ROT13/47, Atbash, Morse, Bacon, A1Z26 — encode and decode both ways. Custom Base alphabets are supported (bit-stream for 2/4/8/16/32/64-char tables, big-integer otherwise). **Encoding brute force** runs every decoder plus ROT1–25/Atbash, six common custom tables, two-layer combinations and the 3-level auto chain, then ranks by readability and flag hits. Everything runs in-page with no companion bridge.
 
-**Everything else** — font tables (sfnt), SQLite pages, ELF/PE sections and overlays, zero-width character steganography, recursive analysis with SHA-256 dedup, batch of 50 files, Markdown report export (full / brief / WP template).
+**Everything else** — font tables (sfnt), SQLite B-tree row scanning (UTF-8/UTF-16, overflow pages, `sqlite-rows.txt`), Git loose objects and packfiles (including OFS_DELTA), ELF/PE sections and overlays, Windows shortcuts (LNK), zero-width / Unicode-Tag / variation-selector steganography, recursive analysis with SHA-256 dedup, batch of 50 files, Markdown report export (full / brief / WP template).
 
 ## UI highlights
 
@@ -103,7 +103,7 @@ Security boundaries: loopback only, `X-MDZ-Token` on every request, CORS limited
 ```bash
 python build.py            # inline src/ into the single HTML, regenerate fixtures
 python build.py --no-bg    # release build without the wallpaper image
-node tests/run.js          # 296 checks
+node tests/run.js          # 392 checks
 node tests/cdp-smoke.js    # Edge CDP smoke (needs Edge)
 ```
 
@@ -119,12 +119,12 @@ src/15-bar.js       EAN-13 / EAN-8 / Code128 / Code39
 src/20-png.js       PNG chunks / decode / dimension recovery / repair
 src/30-jpeg.js      JPEG segments / EXIF / thumbnails
 src/40-bmp.js       BMP header / gap / pixel decode
-src/50-formats.js   GIF / ICO / SVG / ZIP / TIFF / WebP
-src/52-carrier.js   font / SQLite / ELF / PE audits
+src/50-formats.js   GIF / ICO / SVG / ZIP / TIFF / WebP / TGA / PSD
+src/52-carrier.js   font / SQLite rows / Git / ELF / PE / LNK / OLE audits
 src/53-pdf.js       PDF structure audit
 src/55-archives.js  TAR / RAR / 7Z
 src/60-scan.js      bit-plane / LSB scanning and scoring
-src/62-audio.js     WAV / MP3, audio LSB, Morse, FFT
+src/62-audio.js     WAV / MP3 / FLAC, audio LSB, Morse, DTMF, FFT
 src/64-pcap.js      pcap/pcapng, TCP reassembly, DNS/HTTP/USB/ICMP
 src/70-analyze.js   recursive pipeline, reports
 src/80-ui.js        UI, viewer, node editor, self-test

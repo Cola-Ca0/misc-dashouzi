@@ -677,8 +677,8 @@ def fixture_psd():
                 comp_rows.append(bytes((y * 16) & 255 for _ in range(w)))
             else:
                 comp_rows.append(bytes([0x40] * w))
-    packed = [_psd_packbits(r) for r in comp_rows]
-    comp = struct.pack(">H", 1) + b"".join(struct.pack(">H", len(p)) for p in packed) + b"".join(packed)
+    # 合成图用 ZIP（compression 2）：同时覆盖「图层 RLE + 合成图 ZIP」两条路径
+    comp = struct.pack(">H", 2) + zlib.compress(b"".join(comp_rows), 9)
 
     res = b"8BIM" + struct.pack(">H", 1000) + b"\x00\x00" + struct.pack(">I", 16) + b"Adobe Photoshop\x00"
     hdr = b"8BPS" + struct.pack(">H", 1) + b"\x00" * 6 + struct.pack(">HIIHH", 3, h, w, 8, 3)

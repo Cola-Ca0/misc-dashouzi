@@ -5,7 +5,7 @@
 (function (root) {
   'use strict';
   const MDZ = root.MDZ = root.MDZ || {};
-  const { toU8, printableRatio, utf8 } = MDZ;
+  const { toU8, printableRatio, utf8, bytesToHex } = MDZ;
 
   function bytesOf(s) { return Uint8Array.from(s, c => c.charCodeAt(0) & 255); }
 
@@ -244,12 +244,7 @@
     return t;
   }
 
-  function hexEncode(input) {
-    const b = toU8(input);
-    let out = '';
-    for (let i = 0; i < b.length; i++) out += (b[i] >> 4).toString(16) + (b[i] & 15).toString(16);
-    return out;
-  }
+  function hexEncode(input) { return bytesToHex(input); }
 
   function hexDecode(s) {
     let t = String(s).replace(/0x/gi, '').replace(/[^0-9a-fA-F]/g, '');
@@ -472,15 +467,15 @@
     '.': '.-.-.-', ',': '--..--', '?': '..--..', "'": '.----.', '!': '-.-.--', '/': '-..-.', '(': '-.--.', ')': '-.--.-',
     '&': '.-...', ':': '---...', ';': '-.-.-.', '=': '-...-', '+': '.-.-.', '-': '-....-', '_': '..--.-', '"': '.-..-.', '$': '...-..-', '@': '.--.-.'
   };
+  const MORSE_REV = {};
+  for (const k of Object.keys(MORSE_A)) MORSE_REV[MORSE_A[k]] = k;
   function morseEncode(s) {
     return String(s).toUpperCase().split('').map(c => c === ' ' ? '/' : (MORSE_A[c] || '')).filter(Boolean).join(' ');
   }
   function morseDecode(s) {
-    const rev = {};
-    for (const k of Object.keys(MORSE_A)) rev[MORSE_A[k]] = k;
     return String(s).trim().split(/\s+/).map(tok => {
       if (tok === '/' || tok === '|') return ' ';
-      return rev[tok] || '';
+      return MORSE_REV[tok] || '';
     }).join('');
   }
 
@@ -628,12 +623,11 @@
     }
   }
 
-  const DECODE_OPS = [
-    'base64-decode', 'base64url-decode', 'base32-decode', 'base58-decode', 'base62-decode',
-    'base85-decode', 'base91-decode', 'hex-decode', 'bin-decode', 'oct-decode', 'dec-decode',
-    'url-decode', 'html-decode', 'qp-decode', 'unicode-decode', 'uuencode-decode',
-    'morse-decode', 'bacon-decode', 'a1z26-decode'
-  ];
+  // 从 CODEC_OPS 派生，避免「界面上有、爆破里漏了」；自定义表需要用户给字母表，不进爆破
+  const DECODE_OPS = CODEC_OPS
+    .reduce((all, g) => all.concat(g.items), [])
+    .map(it => it.id)
+    .filter(id => /-decode$/.test(id) && id !== 'custom-decode');
 
   function textReadableRatio(t) {
     const chars = Array.from(String(t));
@@ -656,7 +650,17 @@
     return score;
   }
 
-  // 编码爆破：常见解码器 + ROT/Atbash + 自动链全跑一遍，按可读性和 flag 命中排序
+  // 常见换表 Base64/Base62 候选：CTF 里最常出现的几张「表」
+  const COMMON_BASE_TABLES = [
+    { label: '自定义Base 标准表', table: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/' },
+    { label: '自定义Base URL表', table: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_' },
+    { label: '自定义Base 数字在前', table: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/' },
+    { label: '自定义Base 小写在前', table: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/' },
+    { label: '自定义Base 倒序表', table: 'zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA9876543210+/' },
+    { label: '自定义Base Base62', table: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' }
+  ];
+
+  // 编码爆破：常见解码器 + ROT/Atbash + 常见换表 + 两层组合 + 自动链
   function bruteDecode(text, opts) {
     const s = String(text == null ? '' : text);
     const o = opts || {};
@@ -676,6 +680,19 @@
     for (let n = 1; n <= 25; n++) add('rot' + n, rotN(s, n));
     add('rot47', rot47(s));
     add('atbash', atbash(s));
+    for (const t of COMMON_BASE_TABLES) {
+      const r = baseCustomDecode(s, t.table);
+      if (r.bytes) add(t.label, bytesToText(r.bytes) || hexEncode(r.bytes));
+    }
+    // 第二层：只从可读性最高的候选继续解，避免组合爆炸
+    const singles = Array.from(seen.values()).sort((a, b) => b.score - a.score).slice(0, 6);
+    for (const base of singles) {
+      for (const op of DECODE_OPS) {
+        const r = codecApply(op, base.text, o);
+        if (r.ok && !r.binary && r.text !== base.text) add(op.replace(/-decode$/, ''), r.text, base.path.concat(op.replace(/-decode$/, '')));
+      }
+      if (seen.size > 1200) break;
+    }
     for (const r of decodeChain(s, 3)) add(r.kind, r.text, r.path);
     const out = Array.from(seen.values()).filter(x => x.score > 0);
     out.sort((a, b) => b.score - a.score || a.text.length - b.text.length);
@@ -691,6 +708,6 @@
     urlEncode, htmlEncode, unicodeEncode, unicodeDecode, morseEncode, morseDecode,
     baconEncode, baconDecode, a1z26Encode, a1z26Decode, binEncode, binDecode,
     octEncode, octDecode, decEncode, decDecode, baseCustomEncode, baseCustomDecode,
-    CODEC_OPS, codecApply, bruteDecode
+    CODEC_OPS, codecApply, bruteDecode, MORSE_A, MORSE_REV
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

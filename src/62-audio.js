@@ -349,17 +349,8 @@
   }
 
   // ---------- Morse ----------
-  const MORSE = {
-    '.-': 'A', '-...': 'B', '-.-.': 'C', '-..': 'D', '.': 'E', '..-.': 'F', '--.': 'G',
-    '....': 'H', '..': 'I', '.---': 'J', '-.-': 'K', '.-..': 'L', '--': 'M', '-.': 'N',
-    '---': 'O', '.--.': 'P', '--.-': 'Q', '.-.': 'R', '...': 'S', '-': 'T', '..-': 'U',
-    '...-': 'V', '.--': 'W', '-..-': 'X', '-.--': 'Y', '--..': 'Z',
-    '-----': '0', '.----': '1', '..---': '2', '...--': '3', '....-': '4',
-    '.....': '5', '-....': '6', '--...': '7', '---..': '8', '----.': '9',
-    '.-.-.-': '.', '--..--': ',', '..--..': '?', '-..-.': '/', '-....-': '-',
-    '.----.': "'", '-.--.': '(', '-.--.-': ')', '.-..-.': '"', '---...': ':',
-    '-.-.-.': ';', '..--.-': '_', '...-..-': '$', '.--.-.': '@'
-  };
+  // 码表只有一份：文本侧 MORSE_A 在 12-encode.js，这里直接取反向表
+  const MORSE = MDZ.MORSE_REV;
 
   function morseDecodePCM(pcm, opts) {
     const o = opts || {};
@@ -412,25 +403,16 @@
     for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
     return s;
   }
-  function utf16be(b) {
-    let s = '';
-    for (let i = 0; i + 1 < b.length; i += 2) {
-      const c = (b[i] << 8) | b[i + 1];
-      if (c === 0) break;
-      s += String.fromCharCode(c);
-    }
-    return s;
-  }
   function decodeID3Text(data, enc) {
     const b = data;
     if (!b || !b.length) return '';
     let s = '';
     if (enc === 0) s = latin1(b);
     else if (enc === 3) s = utf8(b) || latin1(b);
-    else if (enc === 2) s = utf16be(b);
+    else if (enc === 2) s = MDZ.utf16be(b);
     else if (enc === 1) {
       if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) s = MDZ.utf16le(b.subarray(2));
-      else if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) s = utf16be(b.subarray(2));
+      else if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) s = MDZ.utf16be(b.subarray(2));
       else s = MDZ.utf16le(b);
     } else s = latin1(b);
     return trimNul(s).replace(/\x00/g, ' ').trim();

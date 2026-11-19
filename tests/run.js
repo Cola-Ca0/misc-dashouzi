@@ -1344,10 +1344,10 @@ console.log('\n== SQLite 行扫描 ==');
   const db = fs.readFileSync(path.join(__dirname, 'fixtures', 'rows.db'));
   const r = M.auditSQLite(db);
   const card = r.findings.find(f => f.type === 'sqlite_rows');
-  check('SQLite 逐行扫描读出行文本', !!card && card.title.indexOf('行') >= 0
-    && r.findings.some(f => f.actual === 'flag{sqlite_row_data}'),
+  check('SQLite 逐行扫描读出行文本', !!card && card.title.indexOf('4 行') >= 0
+    && r.findings.some(f => f.type === 'sqlite_row_flag' && f.actual === 'flag{sqlite_row_data}'),
     JSON.stringify(r.findings.map(f => f.type + ':' + (f.actual || f.title)).slice(0, 6)));
-  check('SQLite 溢出页里的 flag 也能捞出', r.findings.some(f => f.actual === 'flag{sqlite_overflow}'),
+  check('SQLite 溢出页里的 flag 也能捞出', r.findings.some(f => f.type === 'sqlite_row_flag' && f.actual === 'flag{sqlite_overflow}'),
     JSON.stringify(r.findings.map(f => f.actual).filter(Boolean)));
   check('SQLite 行文本导出产物', r.artifacts.some(a => a.name === 'sqlite-rows.txt' && a.bytes.length > 100),
     JSON.stringify(r.artifacts.map(a => a.name)));
@@ -1368,8 +1368,8 @@ console.log('\n== PSD ==');
     JSON.stringify((parsed.layers || []).map(l => ({ n: l.name, v: l.visible }))));
   const r = M.auditPSD(p, 'x.psd');
   const ch = r.image && r.image.channels;
-  check('PSD 合成图像素正确', !!ch && r.image.width === 16 && ch.R[5 + 5 * 16] === 80 && ch.G[5 + 5 * 16] === 80 && ch.B[0] === 0x40,
-    ch ? JSON.stringify({ r: ch.R[85], g: ch.G[85], b: ch.B[0] }) : 'no image');
+  check('PSD 合成图像素正确（ZIP）', !!ch && r.info.compression === 2 && r.image.width === 16 && ch.R[5 + 5 * 16] === 80 && ch.G[5 + 5 * 16] === 80 && ch.B[0] === 0x40,
+    ch ? JSON.stringify({ comp: r.info.compression, r: ch.R[85], g: ch.G[85], b: ch.B[0] }) : 'no image');
   check('PSD 解出隐藏图层预览', (r.images || []).length === 2 && r.images.some(x => x.name.indexOf('隐藏') >= 0),
     JSON.stringify((r.images || []).map(x => x.name)));
   check('PSD 导出隐藏层 BMP', (r.artifacts || []).some(a => /^psd-hidden-/.test(a.name)), JSON.stringify((r.artifacts || []).map(a => a.name)));
@@ -1407,12 +1407,27 @@ console.log('\n== 编码工具箱 ==');
     check('二/八/十进制往返', M.binDecode(M.binEncode(fb)).length === 4 && M.decDecode(M.decEncode(fb)).length === 4 && M.octDecode(M.octEncode(fb)).length === 4);
   }
   check('Unicode 转义往返', M.unicodeDecode(M.unicodeEncode('flag{中文}')) === 'flag{中文}', M.unicodeEncode('flag{中文}'));
+  const unimplemented = [];
+  for (const g of M.CODEC_OPS) for (const it of g.items) {
+    const r = M.codecApply(it.id, 'abc', { alphabet: '0123456789abcdef' });
+    if (!r.ok && /未知操作/.test(r.error || '')) unimplemented.push(it.id);
+  }
+  check('编码工具每个界面操作都有实现', unimplemented.length === 0, unimplemented.join(', '));
   const b64 = M.codecApply('base64-encode', 'flag{brute_b64}').text;
   const hits = M.bruteDecode(b64);
   check('编码爆破命中 base64 里的 flag', hits.length > 0 && hits.some(h => h.text.indexOf('flag{brute_b64}') >= 0),
     JSON.stringify(hits.slice(0, 3).map(h => ({ k: h.kind, s: h.score }))));
   const rot = M.bruteDecode(M.rotN('flag{rot_rot}', 13));
   check('编码爆破命中 ROT13', rot.some(h => h.text.indexOf('flag{rot_rot}') >= 0), JSON.stringify(rot.slice(0, 3).map(h => h.kind)));
+  const digitFirst = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/';
+  const ct = M.codecApply('custom-encode', 'flag{custom_brute}', { alphabet: digitFirst }).text;
+  const cb = M.bruteDecode(ct);
+  check('编码爆破能试常见换表 Base', cb.some(h => h.text.indexOf('flag{custom_brute}') >= 0 && /自定义Base/.test(h.kind)),
+    JSON.stringify(cb.slice(0, 4).map(h => [h.kind, h.text.slice(0, 30)])));
+  const qpB64 = M.codecApply('base64-encode', M.qpEncode('flag{qp_chain}=x')).text;
+  const chainHits = M.bruteDecode(qpB64);
+  check('编码爆破两层组合（Base64 → QP）', chainHits.some(h => h.text === 'flag{qp_chain}=x' && h.path.length >= 2),
+    JSON.stringify(chainHits.slice(0, 5).map(h => [h.path.join('→'), h.text.slice(0, 30)])));
 }
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }

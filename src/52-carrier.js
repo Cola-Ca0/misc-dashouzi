@@ -111,12 +111,6 @@
     return null;
   }
 
-  function sqliteUtf16be(bytes) {
-    let s = '';
-    for (let i = 0; i + 1 < bytes.length; i += 2) s += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
-    return s;
-  }
-
   function sqliteLocalLen(payloadLen, usable) {
     const maxLocal = usable - 35;
     const minLocal = Math.floor((usable - 12) * 32 / 255) - 23;
@@ -147,7 +141,7 @@
         if (t & 1) {
           let s;
           if (enc === 2) s = MDZ.utf16le(payload.subarray(body, body + len));
-          else if (enc === 3) s = sqliteUtf16be(payload.subarray(body, body + len));
+          else if (enc === 3) s = MDZ.utf16be(payload.subarray(body, body + len));
           else s = MDZ.utf8(payload.subarray(body, body + len));
           if (s) out.push(s);
         }
@@ -787,6 +781,11 @@
         if (!merged) { deltaFail++; done++; continue; }
         data = merged; type = base.type; deltaOk++;
       } else if (h.type === 7) {
+        // 基底可能在别的 pack；至少把 delta 里的字面量（insert 段）扫一遍
+        const dtext = MDZ.utf8(z.out) || ascii(z.out, Math.min(z.out.length, 65536));
+        for (const f of MDZ.flagFindAll(dtext)) {
+          if (!seen.has(f)) { seen.add(f); flags.push(f); }
+        }
         deltaFail++; done++; continue;
       }
       byOffset.set(objOff, { type, data });
@@ -836,5 +835,5 @@
     return { findings, artifacts };
   }
 
-  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE, auditGitObject, auditGitPack, gitLooseObject });
+  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE, auditGitObject, auditGitPack });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
