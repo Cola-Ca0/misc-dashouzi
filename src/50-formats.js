@@ -1427,6 +1427,127 @@
     return { findings, artifacts, image: comp.image || null, images, info, parsed: { info, layers, end: comp.end } };
   }
 
+  // ---------- PCX ----------
+  // 128 字节头 + RLE 像素；8 位单平面在数据后跟 0x0C + 768 字节调色板。
+  function decodePCX(b) {
+    if (b.length < 128 || b[0] !== 0x0A || b[2] !== 1) return { error: '不是 PCX' };
+    const hdr = {
+      version: b[1], bpp: b[3], planes: b[65], bytesPerLine: le16(b, 66), paletteInfo: le16(b, 68),
+      xmin: le16(b, 4), ymin: le16(b, 6), xmax: le16(b, 8), ymax: le16(b, 10)
+    };
+    const w = hdr.xmax - hdr.xmin + 1, h = hdr.ymax - hdr.ymin + 1;
+    if (!(w > 0) || !(h > 0) || w * h > 20e6) return { error: '尺寸无效' };
+    if (![1, 2, 4, 8].includes(hdr.bpp) || hdr.planes < 1 || hdr.planes > 4) return { error: 'bpp/plane 不支持' };
+    if (!hdr.bytesPerLine) return { error: 'bytesPerLine=0' };
+    const need = h * hdr.planes * hdr.bytesPerLine;
+    const raw = new Uint8Array(need);
+    let p = 128, o = 0;
+    while (o < need && p < b.length) {
+      const c = b[p++];
+      if ((c & 0xC0) === 0xC0) {
+        const n = c & 0x3F;
+        const v = b[p++];
+        for (let i = 0; i < n && o < need; i++) raw[o++] = v;
+      } else {
+        raw[o++] = c;
+      }
+    }
+    const truncated = o < need;
+    let palette = null, paletteAt = -1;
+    if (hdr.bpp === 8 && hdr.planes === 1 && p + 769 <= b.length && b[p] === 0x0C) {
+      palette = b.subarray(p + 1, p + 769);
+      paletteAt = p;
+      p += 769;
+    }
+    if (!palette) palette = b.subarray(16, 64);
+    const n = w * h;
+    const R = new Uint8Array(n), G = new Uint8Array(n), B = new Uint8Array(n), A = new Uint8Array(n).fill(255);
+    const pal = (idx, dst, i) => {
+      const off = idx * 3;
+      if (off + 2 < palette.length) { dst[0][i] = palette[off]; dst[1][i] = palette[off + 1]; dst[2][i] = palette[off + 2]; }
+    };
+    if (hdr.bpp === 8 && hdr.planes === 3) {
+      for (let y = 0; y < h; y++) {
+        const rowBase = y * 3 * hdr.bytesPerLine;
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          R[i] = raw[rowBase + x];
+          G[i] = raw[rowBase + hdr.bytesPerLine + x];
+          B[i] = raw[rowBase + 2 * hdr.bytesPerLine + x];
+        }
+      }
+    } else if (hdr.bpp === 8 && hdr.planes === 4) {
+      for (let y = 0; y < h; y++) {
+        const rowBase = y * 4 * hdr.bytesPerLine;
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          R[i] = raw[rowBase + x];
+          G[i] = raw[rowBase + hdr.bytesPerLine + x];
+          B[i] = raw[rowBase + 2 * hdr.bytesPerLine + x];
+          A[i] = raw[rowBase + 3 * hdr.bytesPerLine + x];
+        }
+      }
+    } else if (hdr.bpp === 8 && hdr.planes === 1) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          pal(raw[y * hdr.bytesPerLine + x], [R, G, B], i);
+        }
+      }
+    } else if (hdr.bpp === 1) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          let idx = 0;
+          for (let pl = 0; pl < hdr.planes; pl++) {
+            const byte = raw[(y * hdr.planes + pl) * hdr.bytesPerLine + (x >> 3)];
+            idx |= ((byte >> (7 - (x & 7))) & 1) << pl;
+          }
+          pal(idx, [R, G, B], y * w + x);
+        }
+      }
+    } else if (hdr.bpp === 4 && hdr.planes === 1) {
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const byte = raw[y * hdr.bytesPerLine + (x >> 1)];
+          pal((x & 1) ? (byte & 15) : (byte >> 4), [R, G, B], y * w + x);
+        }
+      }
+    } else {
+      return { error: `bpp=${hdr.bpp} planes=${hdr.planes} 不支持` };
+    }
+    return {
+      width: w, height: h, bitDepth: hdr.bpp, colorType: 'PCX', channels: { R, G, B, A },
+      hdr, consumed: p, paletteAt, truncated, error: null
+    };
+  }
+
+  function auditPCX(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    const dec = decodePCX(b);
+    if (dec.error) return { findings: [finding('L0', 'format', '不是 PCX', { detail: dec.error })], artifacts, image: null };
+    const hdr = dec.hdr;
+    findings.push(finding('L1', 'pcx', `PCX ${dec.width} × ${dec.height} · ${hdr.bpp} bpp · ${hdr.planes} 平面${hdr.version ? ' · v' + hdr.version : ''}`, {
+      confidence: 0.9, offset: 0,
+      declared: `每行 ${hdr.bytesPerLine} 字节`,
+      actual: dec.truncated ? '像素数据被截断' : `像素到 0x${hex(dec.consumed)}`,
+      detail: `调色板 ${dec.paletteAt >= 0 ? '256 色（0x0C + 768 字节）' : '16 色（头部 48 字节）'}；RLE 编码。`,
+      recipe: 'PCX 无全局偏移表，逐行 RLE：0xC0|n 后跟重复字节'
+    }));
+    if (dec.truncated) findings.push(finding('L1', 'pcx_truncated', 'PCX 像素数据不完整', { confidence: 0.8 }));
+    if (dec.consumed < b.length) {
+      const tr = b.subarray(dec.consumed);
+      findings.push(finding('L1', 'pcx_trailer', `像素/调色板之后还有 ${tr.length} 字节`, {
+        confidence: tr.some(x => x !== 0) ? 0.95 : 0.6,
+        offset: dec.consumed,
+        preview: ascii(tr.subarray(0, 120), Math.min(120, tr.length)),
+        detail: 'PCX 没有「文件长度」字段，播放器读完像素就停，尾部可夹带。'
+      }));
+      artifacts.push(artifact('pcx-trailer.bin', tr, 'PCX 尾部附加数据'));
+    }
+    return { findings, artifacts, image: dec.error ? null : dec, parsed: { hdr, consumed: dec.consumed, paletteAt: dec.paletteAt } };
+  }
+
   Object.assign(MDZ, {
     isGIF, parseGIF, auditGIF, lzwDecode, deinterlaceGIF, gifFrameImage, editGIFDims,
     isICO, parseICO, auditICO,
@@ -1434,6 +1555,6 @@
     isZIP, parseZIP, unzipEntry, auditZIP, b64decode,
     isTIFF, auditTIFF, isWEBP, auditWEBP,
     parseTGA, decodeTGA, auditTGA,
-    parsePSD, auditPSD
+    parsePSD, auditPSD, decodePCX, auditPCX
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -34,7 +34,7 @@ One rule runs through all six: **declared quantity ≠ actual quantity**.
 
 ## What it covers
 
-**Images** — PNG / JPEG / GIF / BMP / ICO / SVG / TIFF / WebP / TGA / PSD
+**Images** — PNG / JPEG / GIF / BMP / ICO / SVG / TIFF / WebP / TGA / PSD / PCX
 - PNG: chunks, CRC, dimension recovery from IHDR-CRC and IDAT length, double zlib, extra scanlines, tEXt/zTXt/iTXt (with nested hex/base58/base64), palette (PLTE) analysis, Adam7, APNG frames, fake chunk names one letter off, ASCII in broken CRC fields, data after IEND
 - JPEG: segments, EXIF (all XP\* tags, UserComment, GPS, IFD1 thumbnail), multiple EXIF blocks, entropy-data MCU self-check
 - BMP / GIF / ICO / SVG: header-vs-file-size reconciliation, palette gap, per-frame LZW decode, interlaced frames, embedded base64 images
@@ -103,7 +103,7 @@ Security boundaries: loopback only, `X-MDZ-Token` on every request, CORS limited
 ```bash
 python build.py            # inline src/ into the single HTML, regenerate fixtures
 python build.py --no-bg    # release build without the wallpaper image
-node tests/run.js          # 402 checks
+node tests/run.js          # 411 checks
 node tests/cdp-smoke.js    # Edge CDP smoke (needs Edge)
 ```
 
@@ -119,8 +119,8 @@ src/15-bar.js       EAN-13 / EAN-8 / Code128 / Code39
 src/20-png.js       PNG chunks / decode / dimension recovery / repair
 src/30-jpeg.js      JPEG segments / EXIF / thumbnails
 src/40-bmp.js       BMP header / gap / pixel decode
-src/50-formats.js   GIF / ICO / SVG / ZIP / TIFF / WebP / TGA / PSD
-src/52-carrier.js   font / SQLite rows / Git / ELF / PE / LNK / OLE audits
+src/50-formats.js   GIF / ICO / SVG / ZIP / TIFF / WebP / TGA / PSD / PCX
+src/52-carrier.js   font / SQLite rows / Git / Java class / ELF / PE / LNK / OLE audits
 src/53-pdf.js       PDF structure audit
 src/55-archives.js  TAR / RAR / 7Z / bzip2 / ISO9660 / MP4
 src/60-scan.js      bit-plane / LSB scanning and scoring

@@ -13,6 +13,8 @@
         'PNG chunk 与 CRC、双 zlib、多余扫描行、tEXt/zTXt/iTXt、PLTE、APNG；BMP 文件头/调色板/夹缝；GIF 逐帧；JPEG 段/EXIF/缩略图',
         '声明尺寸 ≠ 实际数据：PNG/BMP/JPEG/GIF 尺寸反推 + 一键修复',
         '画字检测、频域峰值、调色板隐写、双图对比、位平面查看器',
+        'TGA（真彩/调色板/灰度 + RLE）、PSD（图层/隐藏层预览/合成图）、PCX（RLE/16/256 色）',
+        'Java class 常量池字符串与 flag；SQLite 行扫描；Git 松散对象与 packfile',
         '二维码识别（1–40 版、L/M/Q/H、数字/字母/字节/汉字）',
         '一维条码：EAN-13 / EAN-8 / Code128 / Code39（灰度扫描线 + 游程解码，正拍或竖拍都认）',
         'Blender 式节点编辑器：通道/位平面/灰度/反色/阈值/量化/重排/裁剪/缩放/XOR/差值/频域/调色板',

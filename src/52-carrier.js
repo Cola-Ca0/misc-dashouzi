@@ -835,5 +835,55 @@
     return { findings, artifacts };
   }
 
-  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE, auditGitObject, auditGitPack });
+  // ---------- Java class ----------
+  // 常量池 UTF-8 项里常带源码名、方法名、硬编码字符串（flag 就在这）。
+  function auditJavaClass(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    if (b.length < 10) return { findings: [finding('L0', 'format', 'Java class 太短')], artifacts, image: null };
+    const minor = rd16(b, 4), major = rd16(b, 6), cpCount = rd16(b, 8);
+    let p = 10;
+    const utf8s = [];
+    let broken = '';
+    for (let i = 1; i < cpCount; i++) {
+      const tag = b[p++];
+      if (p > b.length) { broken = 'constant pool 越界'; break; }
+      if (tag === 1) {
+        const len = rd16(b, p); p += 2;
+        if (p + len > b.length) { broken = 'UTF-8 常量越界'; break; }
+        const s = MDZ.utf8(b.subarray(p, p + len)) || ascii(b.subarray(p, p + len), len);
+        if (s) utf8s.push(s);
+        p += len;
+      } else if (tag === 3 || tag === 4) p += 4;
+      else if (tag === 5 || tag === 6) { p += 8; i++; }
+      else if (tag === 7 || tag === 8 || tag === 16 || tag === 19 || tag === 20) p += 2;
+      else if (tag === 9 || tag === 10 || tag === 11 || tag === 12 || tag === 17 || tag === 18) p += 4;
+      else if (tag === 15) p += 3;
+      else { broken = '未知常量池 tag ' + tag; break; }
+    }
+    if (broken) {
+      findings.push(finding('L1', 'java_cp', '常量池解析中断：' + broken, {
+        confidence: 0.8, actual: `已读 ${utf8s.length} 条 UTF-8 常量`
+      }));
+    }
+    const flags = MDZ.flagFindAll(utf8s.join('\n'));
+    findings.push(finding('L1', 'java', `Java class · ${major}.${minor} · 常量池 ${Math.max(0, cpCount - 1)} 项 · UTF-8 ${utf8s.length} 条`, {
+      confidence: 0.9, offset: 0,
+      actual: flags.length ? flags.slice(0, 5).join(' | ') : utf8s.slice(0, 8).join(' | '),
+      preview: utf8s.slice(0, 40).join('\n'),
+      detail: '常量池 UTF-8 项包含类名、方法名、字段名与硬编码字符串；flag 经常直接躺在这里。',
+      recipe: 'javap -v -p ClassName.class / jadx-gui / strings | grep flag'
+    }));
+    for (const f of flags.slice(0, 10)) {
+      findings.push(finding('L3', 'java_flag', `常量池里出现 ${f}`, { confidence: 0.99, actual: f }));
+    }
+    const txt = utf8s.join('\n').slice(0, 1 << 20);
+    const tb = typeof TextEncoder !== 'undefined'
+      ? new TextEncoder().encode(txt)
+      : Uint8Array.from(txt, c => c.charCodeAt(0) & 255);
+    artifacts.push(artifact('java-strings.txt', tb, 'Java 常量池字符串'));
+    return { findings, artifacts, image: null, parsed: { major, minor, cpCount, utf8s } };
+  }
+
+  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE, auditGitObject, auditGitPack, auditJavaClass });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

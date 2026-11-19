@@ -255,6 +255,7 @@
       case 'BZIP2': return MDZ.auditBzip2(bytes, name, opts);
       case 'TGA': return MDZ.auditTGA(bytes, name, opts);
       case 'PSD': return MDZ.auditPSD(bytes, name, opts);
+      case 'PCX': return MDZ.auditPCX(bytes, name);
       case 'FLAC': return MDZ.auditFLAC(bytes, name);
       case 'LNK': return MDZ.auditLNK(bytes, name, opts);
       case 'OLE': return MDZ.auditOLE(bytes, name, opts);
@@ -263,6 +264,7 @@
       case 'TTF': case 'OTF': case 'WOFF': case 'WOFF2': return MDZ.auditFont(bytes);
       case 'SQLITE': return MDZ.auditSQLite(bytes);
       case 'GIT': return MDZ.auditGitPack(bytes, name);
+      case 'JAVA': return MDZ.auditJavaClass(bytes, name);
       case 'ELF': return MDZ.auditELF(bytes);
       case 'PE': return MDZ.auditPE(bytes);
       case 'TEXT': return auditGeneric(bytes, name);

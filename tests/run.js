@@ -1296,6 +1296,30 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== PCX ==');
+{
+  const pcx = fs.readFileSync(path.join(__dirname, 'fixtures', 'tiny.pcx'));
+  check('PCX 类型识别', M.detectType(pcx, 'x.pcx').format === 'PCX', M.detectType(pcx, 'x.pcx').format);
+  const dec = M.decodePCX(pcx);
+  check('PCX 8 位调色板像素', !dec.error && dec.width === 16 && dec.channels.R[5 + 5 * 16] === 255 && dec.channels.B[0] === 0,
+    dec.error || JSON.stringify({ r: dec.channels.R[85], b: dec.channels.B[0] }));
+  const r = M.auditPCX(pcx, 'tiny.pcx');
+  check('PCX 尾部被捞出', r.findings.some(f => f.type === 'pcx_trailer'), JSON.stringify(r.findings.map(f => f.type)));
+  const an = M.analyze(pcx, 'tiny.pcx', {});
+  check('PCX 进入分析链', findingText(an).indexOf('flag{pcx_tail}') >= 0, findingText(an).slice(0, 160));
+}
+console.log('\n== Java class ==');
+{
+  const j = fs.readFileSync(path.join(__dirname, 'fixtures', 'Hello.class'));
+  check('Java class 类型识别', M.detectType(j, 'x.class').format === 'JAVA', M.detectType(j, 'x.class').format);
+  const r = M.auditJavaClass(j, 'Hello.class');
+  check('Java 常量池字符串与 flag', !!r.parsed && r.parsed.utf8s.indexOf('flag{java_cp}') >= 0
+    && r.findings.some(f => f.type === 'java_flag' && f.actual === 'flag{java_cp}')
+    && (r.artifacts || []).some(a => a.name === 'java-strings.txt'),
+    JSON.stringify(r.parsed && r.parsed.utf8s));
+  const an = M.analyze(j, 'Hello.class', {});
+  check('Java class 进入分析链', findingText(an).indexOf('flag{java_cp}') >= 0, findingText(an).slice(0, 160));
+}
 console.log('\n== MP4 ==');
 {
   const m = fs.readFileSync(path.join(__dirname, 'fixtures', 'clip.mp4'));

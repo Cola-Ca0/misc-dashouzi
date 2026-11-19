@@ -817,6 +817,36 @@ def fixture_mp4():
     mdat = _mp4_box(b"mdat", b"\x00" * 32)
     return ftyp + moov + free + mdat + b"flag{mp4_tail}"
 
+def fixture_pcx():
+    w = h = 16
+    hdr = bytearray(128)
+    hdr[0], hdr[1], hdr[2], hdr[3] = 0x0A, 5, 1, 8
+    hdr[8:10] = struct.pack("<H", w - 1)
+    hdr[10:12] = struct.pack("<H", h - 1)
+    hdr[12:14] = struct.pack("<H", 72)
+    hdr[14:16] = struct.pack("<H", 72)
+    hdr[65] = 1
+    hdr[66:68] = struct.pack("<H", w)
+    hdr[68:70] = struct.pack("<H", 1)
+    data = bytearray()
+    for y in range(h):
+        if y == 5:
+            row = bytearray(w)
+            row[5] = 5
+            data += row
+        else:
+            data += bytes([0xC0 | w, y])
+    pal = bytearray(768)
+    pal[15:18] = bytes([255, 0, 0])
+    return bytes(hdr) + bytes(data) + b"" + bytes(pal) + b"flag{pcx_tail}"
+
+
+def fixture_java_class():
+    cp = bytes([1]) + struct.pack(">H", len(b"flag{java_cp}")) + b"flag{java_cp}"
+    cp += bytes([1]) + struct.pack(">H", 10) + b"SourceFile"
+    body = struct.pack(">HHH", 0x0021, 0, 0) + struct.pack(">HHH", 0, 0, 0) + struct.pack(">H", 0)
+    return bytes([0xCA, 0xFE, 0xBA, 0xBE]) + struct.pack(">HHH", 0, 52, 3) + cp + body
+
 
 def _git_obj_header(typ, size):
     out = bytearray([(typ << 4) | (size & 0x0f)])
@@ -1555,6 +1585,8 @@ FIXTURES = [
     ("unicode_tag.txt", fixture_unicode_tag, ["Unicode Tag 隐写", "flag{unicode_tag_stego}", "变体选择符隐写", "flag{vs_stego}"]),
     ("flagdisk.iso", fixture_iso, ["ISO9660", "FLAGDISK", "flag{iso9660_file}", "flag{iso_tail}"]),
     ("clip.mp4", fixture_mp4, ["MP4 ftyp", "flag{mp4_meta}", "flag{mp4_comment}", "flag{mp4_free}", "flag{mp4_tail}"]),
+    ("Hello.class", fixture_java_class, ["Java class", "flag{java_cp}"]),
+    ("tiny.pcx", fixture_pcx, ["PCX 16 × 16", "flag{pcx_tail}"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),
