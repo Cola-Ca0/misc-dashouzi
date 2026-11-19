@@ -1296,6 +1296,19 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== Mach-O ==');
+{
+  const mo = fs.readFileSync(path.join(__dirname, 'fixtures', 'hello.macho'));
+  check('Mach-O 类型识别', M.detectType(mo, 'x.macho').format === 'MACHO', M.detectType(mo, 'x.macho').format);
+  const r = M.auditMachO(mo, 'hello.macho');
+  check('Mach-O 段/节与入口', !!r.parsed && r.parsed.ncmds === 2 && r.parsed.sects.length === 1
+    && r.parsed.sects[0].sectname === '__text' && r.parsed.entry === 0x100,
+    JSON.stringify(r.parsed && { n: r.parsed.ncmds, s: r.parsed.sects, e: r.parsed.entry }));
+  check('Mach-O flag 与尾部', r.findings.some(f => f.type === 'macho_flag' && f.actual === 'flag{macho_section}')
+    && r.findings.some(f => f.type === 'macho_trailer'), JSON.stringify(r.findings.map(f => f.type)));
+  const an = M.analyze(mo, 'hello.macho', {});
+  check('Mach-O 进入分析链', M.flags(an).indexOf('flag{macho_section}') >= 0 && M.flags(an).indexOf('flag{macho_tail}') >= 0, M.flags(an).join(' '));
+}
 console.log('\n== XZ / LZMA2 ==');
 {
   const rd = n => fs.readFileSync(path.join(__dirname, 'fixtures', n));

@@ -100,7 +100,7 @@
 - WebP：RIFF chunk 遍历、VP8X 画布、EXIF/XMP、ANIM/ANMF、RIFF 后附加
 - TGA / PSD / PCX：TGA 真彩/RLE/footer；PCX RLE 与 16/256 色调色板；PSD 图层记录、隐藏图层预览与 BMP 导出、PackBits/ZIP 图层、合成图 R/G/B、尾部附加
 - TAR / RAR / 7Z / bzip2 / ISO9660 / MP4 / OLE2 / PDF：成员遍历与提取、RAR4/RAR5 文件表、7Z 未压缩文件表、OLE 流提取、PDF 对象/增量更新/内嵌文件/图片/JS（Flate/ASCII85/LZW）
-- 字体（sfnt 表）、SQLite（B 树叶页逐行扫描，UTF-8/UTF-16、溢出页）、Git（松散对象 + packfile/OFS_DELTA）、ELF/PE（节表与 overlay）、Windows 快捷方式（LNK）
+- 字体（sfnt 表）、SQLite（B 树叶页逐行扫描，UTF-8/UTF-16、溢出页）、Git（松散对象 + packfile/OFS_DELTA）、ELF/PE/Mach-O（节表与 overlay）、Windows 快捷方式（LNK）
 
 **流水线**
 - 不可见字符：零宽字符、Unicode Tag（U+E0000 区）、变体选择符（VS1–VS240）都还原成文本/产物
@@ -216,10 +216,10 @@ python build.py
 # 发布版：不内联壁纸（仓库里的成品就是这个）
 python build.py --no-bg
 
-# 回归测试（单元向量 + 111 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
+# 回归测试（单元向量 + 112 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
 node tests/run.js
 
-# 浏览器自检（当前 131 项）
+# 浏览器自检（当前 132 项）
 msedge --headless=new --dump-dom "file:///.../misc-dashouzi.html?selftest=1"
 
 # 浏览器冒烟（需要 Edge；验证自检、上传、位平面缩放、批量、双图对比、零尺寸、50 文件上限、Worker）

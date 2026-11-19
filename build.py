@@ -854,6 +854,19 @@ def _lzw_encode(data):
     return bytes(out)
 
 
+def fixture_macho():
+    flag = b"flag{macho_section}"
+    seg_header = struct.pack("<II16sQQQQiiII", 0x19, 72 + 80, b"__TEXT", 0x100000000, 0x1000, 0, 0x200, 7, 5, 1, 0)
+    section = struct.pack("<16s16sQQIIIIIIII", b"__text", b"__TEXT", 0x100000100, len(flag), 0x100, 4, 0, 0, 0x80000400, 0, 0, 0)
+    main = struct.pack("<IIQQ", 0x80000028, 24, 0x100, 0)
+    sizeofcmds = len(seg_header) + len(section) + len(main)
+    hdr = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x01000007, 3, 2, 2, sizeofcmds, 0, 0)
+    body = hdr + seg_header + section + main
+    body += bytes(0x100 - len(body)) + flag
+    body += bytes(0x200 - len(body))
+    return body + b"flag{macho_tail}"
+
+
 def fixture_xz_text():
     data = b"flag{xz_stream} " * 50
     return lzma.compress(data, format=lzma.FORMAT_XZ)
@@ -1804,6 +1817,7 @@ FIXTURES = [
     ("packbits.tif", fixture_tiff_packbits, ["TIFF", "PackBits"]),
     ("lzw.pdf", fixture_pdf_lzw, ["PDF 内嵌文件", "flag{pdf_lzw_stream}"]),
     ("text.xz", fixture_xz_text, ["XZ 解压", "flag{xz_stream}"]),
+    ("hello.macho", fixture_macho, ["Mach-O", "flag{macho_section}", "flag{macho_tail}", "__text"]),
     ("crc32.xz", fixture_xz_crc32, ["XZ 解压", "flag{xz_crc32}"]),
     ("delta.xz", fixture_xz_delta, ["XZ 解压", "flag{xz_delta_filter}"]),
     ("bcj.xz", fixture_xz_bcj, ["XZ 解压", "flag{xz_bcj_unsupported}"]),

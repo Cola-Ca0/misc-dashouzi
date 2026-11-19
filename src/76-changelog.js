@@ -31,6 +31,7 @@
         '字体 sfnt 表、SQLite 页结构、ELF/PE 节表与 overlay',
         'SQLite 行级扫描：B 树叶页按记录格式解文本列，UTF-8/UTF-16 都读，溢出页也跟，结果导出 sqlite-rows.txt',
         'Git：松散对象（zlib + "<type> <size>\\0"）与 packfile（含 OFS_DELTA 增量还原），提交/blob 里的 flag 直接点名',
+        'Mach-O：32/64 位与 fat 切片、段/节表、入口点、代码签名、尾部 overlay',
         'ISO9660：卷描述符、目录树、文件提取、卷空间后附加；Joliet UTF-16 文件名',
         'MP4/MOV：box 树、ftyp/mvhd、ilst 元数据、free/skip 非零填充、mdat 与尾部附加',
         'PDF LZWDecode（复用 TIFF LZW）与 Flate/ASCII85 过滤器链',

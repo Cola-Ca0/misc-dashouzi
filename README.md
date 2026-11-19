@@ -55,7 +55,7 @@ One rule runs through all six: **declared quantity ≠ actual quantity**.
 
 **Encoding** — an in-page codec toolbox: Base64/Base64URL/32/58/62/85/91, hex, binary/octal/decimal bytes, URL, HTML entities, quoted-printable, Unicode escapes, UUencode, ROT13/47, Atbash, Morse, Bacon, A1Z26 — encode and decode both ways. Custom Base alphabets are supported (bit-stream for 2/4/8/16/32/64-char tables, big-integer otherwise). **Encoding brute force** runs every decoder plus ROT1–25/Atbash, six common custom tables, two-layer combinations and the 3-level auto chain, then ranks by readability and flag hits. Everything runs in-page with no companion bridge.
 
-**Everything else** — font tables (sfnt), SQLite B-tree row scanning (UTF-8/UTF-16, overflow pages, `sqlite-rows.txt`), Git loose objects and packfiles (including OFS_DELTA), ELF/PE sections and overlays, Windows shortcuts (LNK), zero-width / Unicode-Tag / variation-selector steganography, recursive analysis with SHA-256 dedup, batch of 50 files, Markdown report export (full / brief / WP template).
+**Everything else** — font tables (sfnt), SQLite B-tree row scanning (UTF-8/UTF-16, overflow pages, `sqlite-rows.txt`), Git loose objects and packfiles (including OFS_DELTA), ELF/PE/Mach-O sections and overlays, Windows shortcuts (LNK), zero-width / Unicode-Tag / variation-selector steganography, recursive analysis with SHA-256 dedup, batch of 50 files, Markdown report export (full / brief / WP template).
 
 ## UI highlights
 
@@ -103,7 +103,7 @@ Security boundaries: loopback only, `X-MDZ-Token` on every request, CORS limited
 ```bash
 python build.py            # inline src/ into the single HTML, regenerate fixtures
 python build.py --no-bg    # release build without the wallpaper image
-node tests/run.js          # 458 checks
+node tests/run.js          # 463 checks
 node tests/cdp-smoke.js    # Edge CDP smoke (needs Edge)
 ```
 

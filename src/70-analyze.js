@@ -272,6 +272,7 @@
       case 'SQLITE': return MDZ.auditSQLite(bytes);
       case 'GIT': return MDZ.auditGitPack(bytes, name);
       case 'JAVA': return MDZ.auditJavaClass(bytes, name);
+      case 'MACHO': return MDZ.auditMachO(bytes, name);
       case 'ELF': return MDZ.auditELF(bytes);
       case 'PE': return MDZ.auditPE(bytes);
       case 'TEXT': return auditGeneric(bytes, name);

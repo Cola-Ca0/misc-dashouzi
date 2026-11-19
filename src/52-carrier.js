@@ -891,5 +891,123 @@
     return { findings, artifacts, image: null, parsed: { major, minor, cpCount, utf8s } };
   }
 
-  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE, auditGitObject, auditGitPack, auditJavaClass });
+  // ---------- Mach-O ----------
+  // 32/64 位薄二进制与 fat 包；只列段/节、入口、代码签名和 overlay，不反汇编。
+  function auditMachO(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    const be32 = o => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
+    const be64 = o => be32(o) * 4294967296 + be32(o + 4);
+    const magicBE = be32(0);
+    if (magicBE === 0xCAFEBABE) {
+      const nfat = Math.min(be32(4), 64);
+      const slices = [];
+      for (let i = 0; i < nfat; i++) {
+        const o = 8 + i * 20;
+        if (o + 20 > b.length) break;
+        slices.push({ cputype: be32(o), cpusubtype: be32(o + 4), offset: be32(o + 8), size: be32(o + 12), align: be32(o + 16) });
+      }
+      findings.push(finding('L1', 'macho_fat', `Mach-O fat · ${slices.length} 个架构切片`, {
+        confidence: 0.95, offset: 0,
+        actual: slices.map(s => `cpu 0x${hex(s.cputype)} @0x${hex(s.offset)}+${s.size}`).join(' | '),
+        recipe: 'lipo -info / otool -l'
+      }));
+      for (let i = 0; i < slices.length && i < 8; i++) {
+        const sl = slices[i];
+        if (sl.offset + sl.size <= b.length && sl.size) {
+          artifacts.push(artifact(`macho-slice-${i}-cpu${hex(sl.cputype)}.bin`, b.subarray(sl.offset, sl.offset + sl.size), 'Mach-O fat 切片'));
+        }
+      }
+      return { findings, artifacts, image: null, parsed: { fat: slices } };
+    }
+    const thin64le = magicBE === 0xCFFAEDFE, thin32le = magicBE === 0xCEFAEDFE;
+    const thin64be = magicBE === 0xFEEDFACF, thin32be = magicBE === 0xFEEDFACE;
+    if (!(thin64le || thin32le || thin64be || thin32be)) {
+      return { findings: [finding('L0', 'format', '不是 Mach-O')], artifacts, image: null };
+    }
+    const le = thin64le || thin32le;
+    const is64 = thin64le || thin64be;
+    const r32 = le ? ((o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0) : be32;
+    const r64 = o => r32(o) + r32(o + 4) * 4294967296;
+    const cputype = r32(4), filetype = r32(12), ncmds = r32(16), sizeofcmds = r32(20);
+    let p = is64 ? 32 : 28;
+    const cmdsEnd = Math.min(p + sizeofcmds, b.length);
+    const segs = [], sects = [];
+    let maxEnd = p, entry = null, sig = null, symtab = null, unknown = 0;
+    for (let i = 0; i < ncmds && i < 1024 && p + 8 <= cmdsEnd; i++) {
+      const cmd = r32(p), cmdsize = r32(p + 4);
+      if (cmdsize < 8 || p + cmdsize > cmdsEnd) {
+        findings.push(finding('L1', 'macho_cmd', `第 ${i + 1} 条 load command 越界`, {
+          confidence: 0.8, offset: p, declared: `${cmdsize} 字节`, actual: `只剩 ${cmdsEnd - p} 字节`
+        }));
+        break;
+      }
+      if (cmd === 0x19 || cmd === 0x1) {
+        const is64seg = cmd === 0x19;
+        const segname = ascii(b.subarray(p + 8, p + 24), 16).replace(/[.\x00]+$/, '');
+        const q = p + (is64seg ? 72 : 56);
+        const fileoff = is64seg ? r64(p + 40) : r32(p + 32);
+        const filesize = is64seg ? r64(p + 48) : r32(p + 36);
+        const nsects = r32(p + (is64seg ? 64 : 48));
+        segs.push({ segname, fileoff, filesize, nsects });
+        maxEnd = Math.max(maxEnd, fileoff + filesize);
+        for (let k = 0; k < nsects && k < 256; k++) {
+          const so = q + k * (is64seg ? 80 : 68);
+          if (so + (is64seg ? 80 : 68) > p + cmdsize) break;
+          const sectname = ascii(b.subarray(so, so + 16), 16).replace(/[.\x00]+$/, '');
+          const ssize = is64seg ? r64(so + 40) : r32(so + 36);
+          const soff = is64seg ? r32(so + 48) : r32(so + 40);
+          sects.push({ segname, sectname, offset: soff, size: ssize });
+          maxEnd = Math.max(maxEnd, soff + ssize);
+        }
+      } else if (cmd === 0x80000028 && cmdsize >= 24) {
+        entry = r64(p + 8);
+      } else if (cmd === 0x1D && cmdsize >= 16) {
+        sig = { off: r32(p + 8), size: r32(p + 12) };
+      } else if (cmd === 0x2 && cmdsize >= 24) {
+        symtab = { symoff: r32(p + 8), nsyms: r32(p + 12), stroff: r32(p + 16), strsize: r32(p + 20) };
+      } else {
+        unknown++;
+      }
+      p += cmdsize;
+    }
+    findings.push(finding('L1', 'macho', `Mach-O ${is64 ? '64' : '32'} 位 · cpu 0x${hex(cputype)} · filetype ${filetype} · ${ncmds} 条命令`, {
+      confidence: 0.95, offset: 0,
+      actual: `${segs.length} 段 / ${sects.length} 节${entry != null ? ' · 入口 0x' + hex(entry) : ''}`,
+      detail: `段：${segs.map(s => s.segname || '(无名)').join(' ')}；sizeofcmds ${sizeofcmds}${unknown ? '；' + unknown + ' 条未解析命令' : ''}`,
+      preview: segs.map(s => `${s.segname} fileoff=0x${hex(s.fileoff)} filesize=0x${hex(s.filesize)} sections=${s.nsects}`).join('\n') +
+        (sects.length ? '\n' + sects.slice(0, 24).map(s => `  ${s.segname},${s.sectname} off=0x${hex(s.offset)} size=0x${hex(s.size)}`).join('\n') : ''),
+      recipe: 'otool -l / MachOView / nm'
+    }));
+    if (sig && sig.size) {
+      findings.push(finding('L2', 'macho_sig', `代码签名 blob ${sig.size} 字节 @0x${hex(sig.off)}`, { confidence: 0.7, offset: sig.off }));
+      if (sig.off + sig.size <= b.length) artifacts.push(artifact('macho-codesign.bin', b.subarray(sig.off, sig.off + sig.size), 'Mach-O 代码签名'));
+    }
+    if (symtab) {
+      findings.push(finding('L3', 'macho_symtab', `符号表 ${symtab.nsyms} 项`, {
+        confidence: 0.5, actual: `symoff 0x${hex(symtab.symoff)} · stroff 0x${hex(symtab.stroff)}+${symtab.strsize}`
+      }));
+    }
+    const hits = MDZ.strings(b, 6).filter(x => /flag|ctf|pass|key|secret/i.test(x));
+    if (hits.length) {
+      findings.push(finding('L3', 'strings', 'Mach-O 可打印串命中', { confidence: 0.6, actual: hits.slice(0, 8).join(' | '), preview: hits.slice(0, 20).join('\n') }));
+    }
+    for (const f of MDZ.flagFindAll(hits.join('\n'))) {
+      findings.push(finding('L3', 'macho_flag', `Mach-O 里出现 ${f}`, { confidence: 0.99, actual: f }));
+    }
+    if (maxEnd && maxEnd < b.length) {
+      const tr = b.subarray(maxEnd);
+      if (tr.length >= 4) {
+        findings.push(finding('L1', 'macho_trailer', `段/节之后还有 ${tr.length} 字节`, {
+          confidence: tr.some(x => x !== 0) ? 0.9 : 0.5, offset: maxEnd,
+          preview: ascii(tr.subarray(0, 120), Math.min(120, tr.length)),
+          detail: 'Mach-O 的有效区到最后一个段/节为止，后面的数据不会被加载。'
+        }));
+        artifacts.push(artifact('macho-trailer.bin', tr, 'Mach-O 尾部附加数据'));
+      }
+    }
+    return { findings, artifacts, image: null, parsed: { is64, cputype, filetype, ncmds, segs, sects, entry, sig, symtab } };
+  }
+
+  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE, auditGitObject, auditGitPack, auditJavaClass, auditMachO });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
