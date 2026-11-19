@@ -1285,5 +1285,16 @@ console.log('\n== LNK ==');
   check('LNK 解出命令行参数', txt.indexOf('flag{lnk_args}') >= 0, txt.slice(0, 200));
   check('LNK 解出相对路径', txt.indexOf('..\\flag.exe') >= 0, '');
 }
+console.log('\n== OLE 复合文档 ==');
+{
+  const o = fs.readFileSync(path.join(__dirname, 'fixtures', 'compound.doc'));
+  check('OLE 类型识别', M.detectType(o, 'x.doc').format === 'OLE', M.detectType(o, 'x.doc').format);
+  const r = M.auditOLE(o, 'x.doc');
+  const names = (r.artifacts || []).map(a => a.name);
+  check('OLE 列出并提取流', names.indexOf('ole-flag.txt') >= 0 && r.artifacts[0].bytes.length === 4096,
+    JSON.stringify(names));
+  const txt = findingText(M.analyze(o, 'compound.doc', {}));
+  check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }

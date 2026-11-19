@@ -329,5 +329,177 @@
     return { findings, artifacts, image: null, lnk: out };
   }
 
-  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK });
+  // ---------- OLE2 / CFB 复合文档 ----------
+  const OLE_SIG = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+  function auditOLE(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    if (b.length < 512) return { findings: [finding('L0', 'format', '不是 OLE 复合文档', { detail: '不足 512 字节' })], artifacts };
+    for (let i = 0; i < 8; i++) if (b[i] !== OLE_SIG[i]) return { findings: [finding('L0', 'format', '不是 OLE 复合文档', { detail: '签名不符' })], artifacts };
+
+    const major = le16(b, 0x1A);
+    const byteOrder = le16(b, 0x1C);
+    const sectorShift = le16(b, 0x1E);
+    const miniShift = le16(b, 0x20);
+    if (byteOrder !== 0xFFFE || (sectorShift !== 9 && sectorShift !== 12) || miniShift !== 6) {
+      return { findings: [finding('L0', 'format', 'OLE 头字段非法', { detail: `byteOrder=0x${hex(byteOrder)} shift=${sectorShift}/${miniShift}` })], artifacts };
+    }
+    const S = 1 << sectorShift;
+    const totalSectors = Math.floor(b.length / S) - 1;
+    const off = sid => (sid + 1) * S;
+
+    // FAT 扇区列表（DIFAT）
+    const fatIds = [];
+    for (let i = 0; i < 109; i++) {
+      const sid = le32(b, 0x4C + i * 4);
+      if (sid <= 0xFFFFFFFA) fatIds.push(sid);
+    }
+    let difat = le32(b, 0x44);
+    let guard = 0;
+    while (difat <= 0xFFFFFFFA && guard++ < 100000) {
+      const o = off(difat);
+      if (o + S > b.length) break;
+      const per = S / 4 - 1;
+      for (let i = 0; i < per; i++) { const sid = le32(b, o + i * 4); if (sid <= 0xFFFFFFFA) fatIds.push(sid); }
+      difat = le32(b, o + per * 4);
+    }
+    const fat = new Uint32Array(fatIds.length * (S / 4));
+    let fi = 0;
+    for (const id of fatIds) {
+      const o = off(id);
+      for (let i = 0; i < S / 4 && o + i * 4 + 4 <= b.length; i++) fat[fi++] = le32(b, o + i * 4);
+    }
+    const walk = (start, table, cap) => {
+      const out = [];
+      let sid = start >>> 0;
+      while (sid <= 0xFFFFFFFA && out.length < cap && sid < table.length) {
+        out.push(sid);
+        sid = table[sid] >>> 0;
+      }
+      return out;
+    };
+    const chainBuf = (start, size) => {
+      const cap = Math.min(size || 0, 64 * 1024 * 1024);
+      const sids = walk(start, fat, totalSectors + 1);
+      const out = new Uint8Array(cap);
+      let o = 0;
+      for (const sid of sids) {
+        if (o >= out.length) break;
+        const so = off(sid);
+        const n = Math.min(S, out.length - o, Math.max(0, b.length - so));
+        if (n <= 0) break;
+        out.set(b.subarray(so, so + n), o); o += n;
+      }
+      return out;
+    };
+
+    // 目录
+    const dirSids = walk(le32(b, 0x30), fat, totalSectors + 1);
+    const dirBuf = new Uint8Array(dirSids.length * S);
+    dirSids.forEach((sid, i) => {
+      const so = off(sid);
+      const n = Math.max(0, Math.min(S, b.length - so));
+      if (n) dirBuf.set(b.subarray(so, so + n), i * S);
+    });
+    const entries = [];
+    for (let p = 0; p + 128 <= dirBuf.length; p += 128) {
+      const nameLen = le16(dirBuf, p + 0x40);
+      const type = dirBuf[p + 0x42];
+      if (!nameLen || type === 0) { entries.push(null); continue; }
+      let nm = '';
+      for (let i = 0; i + 1 < nameLen - 2; i += 2) {
+        const c = dirBuf[p + i] | (dirBuf[p + i + 1] << 8);
+        if (c) nm += String.fromCharCode(c);
+      }
+      let size = le32(dirBuf, p + 0x78);
+      if (major >= 4) size += le32(dirBuf, p + 0x7C) * 0x100000000;
+      entries.push({
+        name: nm, type,
+        left: le32(dirBuf, p + 0x44), right: le32(dirBuf, p + 0x48), child: le32(dirBuf, p + 0x4C),
+        start: le32(dirBuf, p + 0x74), size
+      });
+    }
+    if (!entries.length || !entries[0]) {
+      return { findings: [finding('L0', 'format', 'OLE 目录为空', { detail: '第一个目录项不是 root' })], artifacts };
+    }
+    const root = entries[0];
+
+    // mini stream / MiniFAT
+    const miniSids = walk(le32(b, 0x3C), fat, totalSectors + 1);
+    const miniFat = new Uint32Array(miniSids.length * (S / 4));
+    let mfi = 0;
+    for (const id of miniSids) {
+      const o = off(id);
+      for (let i = 0; i < S / 4 && o + i * 4 + 4 <= b.length; i++) miniFat[mfi++] = le32(b, o + i * 4);
+    }
+    const miniBuf = root.size ? chainBuf(root.start, Math.min(root.size, 64 * 1024 * 1024)) : new Uint8Array(0);
+
+    const readStream = e => {
+      if (!e.size) return new Uint8Array(0);
+      if (e.size < 0x1000 && miniBuf.length) {
+        const want = Math.min(e.size, 16 * 1024 * 1024);
+        const sids = walk(e.start, miniFat, Math.floor(miniBuf.length / 64) + 1);
+        const out = new Uint8Array(want);
+        let o = 0;
+        for (const sid of sids) {
+          if (o >= out.length) break;
+          const n = Math.min(64, out.length - o);
+          out.set(miniBuf.subarray(sid * 64, sid * 64 + n), o); o += n;
+        }
+        return out;
+      }
+      return chainBuf(e.start, Math.min(e.size, 16 * 1024 * 1024));
+    };
+
+    // 红黑树遍历
+    const streams = [];
+    const visited = new Set();
+    const visit = (sid, path) => {
+      const stack = [sid];
+      while (stack.length) {
+        const id = stack.pop();
+        if (id > 0xFFFFFFFA || visited.has(id)) continue;
+        visited.add(id);
+        const e = entries[id];
+        if (!e) continue;
+        stack.push(e.left, e.right);
+        if (e.type === 1) visit(e.child, path + e.name + '/');
+        else if (e.type === 2) streams.push({ path: path + e.name, entry: e });
+      }
+    };
+    visit(root.child, '');
+
+    findings.push(finding('L2', 'ole', `OLE2 复合文档（v${major}，${streams.length} 个流）`, {
+      confidence: 0.95, offset: 0,
+      declared: `扇区 ${S} 字节 · FAT ${fatIds.length} 个扇区`,
+      actual: streams.map(s => `${s.path}(${s.entry.size})`).join(', ').slice(0, 500),
+      detail: '老 Office（doc/xls/ppt）、MSI、Outlook msg 都是这个容器；隐藏流和宏常在这里。'
+    }));
+
+    let extracted = 0;
+    for (const s of streams) {
+      if (extracted >= 32) break;
+      if (!s.entry.size) continue;
+      let data;
+      try { data = readStream(s.entry); } catch (e) { continue; }
+      if (!data || !data.length) continue;
+      extracted++;
+      const safe = s.path.replace(/[^\w.\-]+/g, '_').slice(0, 80);
+      artifacts.push(artifact('ole-' + safe, data, `OLE 流（${s.path}，${data.length} 字节）`));
+      const head = ascii(data.subarray(0, 64), Math.min(64, data.length)).replace(/[^\x20-\x7e]/g, '.');
+      if (/flag|ctf|\{/i.test(head)) {
+        findings.push(finding('L3', 'ole_stream', `OLE 流 ${s.path} 疑似含明文`, {
+          confidence: 0.7, actual: head, preview: head
+        }));
+      }
+    }
+    if (streams.length > 32) {
+      findings.push(finding('L3', 'ole_limit', `只提取了前 32 个流（共 ${streams.length} 个）`, {
+        confidence: 0.6, detail: '其余流可按名称用 oletools 手工导出。'
+      }));
+    }
+    return { findings, artifacts, image: null, ole: { major, sectorSize: S, streams: streams.map(s => ({ path: s.path, size: s.entry.size })) } };
+  }
+
+  Object.assign(MDZ, { auditFont, auditSQLite, auditELF, auditPE, auditLNK, auditOLE });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -193,6 +193,7 @@
       case 'BZIP2': return MDZ.auditBzip2(bytes, name, opts);
       case 'TGA': return MDZ.auditTGA(bytes, name, opts);
       case 'LNK': return MDZ.auditLNK(bytes, name, opts);
+      case 'OLE': return MDZ.auditOLE(bytes, name, opts);
       case 'PCAP': return MDZ.auditPCAP(bytes, name, opts);
       case 'PCAPNG': return MDZ.auditPCAP(bytes, name, opts);
       case 'TTF': case 'OTF': case 'WOFF': case 'WOFF2': return MDZ.auditFont(bytes);

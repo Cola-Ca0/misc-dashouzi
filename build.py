@@ -673,6 +673,44 @@ def _embed_bits_lsb(vals, msg, channel=0, channels=1, offset=0):
     return out
 
 
+def fixture_ole():
+    import struct
+    S = 512
+    payload = b"flag{ole_stream}" + b"\x00" * (4096 - len(b"flag{ole_stream}"))
+    hdr = bytearray(512)
+    hdr[0:8] = bytes.fromhex("D0CF11E0A1B11AE1")
+    struct.pack_into("<HH", hdr, 0x18, 0x003E, 3)
+    struct.pack_into("<H", hdr, 0x1C, 0xFFFE)
+    struct.pack_into("<HH", hdr, 0x1E, 9, 6)
+    struct.pack_into("<I", hdr, 0x2C, 1)
+    struct.pack_into("<I", hdr, 0x30, 1)
+    struct.pack_into("<I", hdr, 0x38, 0x1000)
+    struct.pack_into("<I", hdr, 0x3C, 0xFFFFFFFE)
+    struct.pack_into("<I", hdr, 0x40, 0)
+    struct.pack_into("<I", hdr, 0x44, 0xFFFFFFFE)
+    struct.pack_into("<I", hdr, 0x48, 0)
+    struct.pack_into("<I", hdr, 0x4C, 0)
+    for i in range(1, 109):
+        struct.pack_into("<I", hdr, 0x4C + i * 4, 0xFFFFFFFF)
+
+    fat = [0xFFFFFFFD, 0xFFFFFFFE] + [i + 1 for i in range(2, 9)] + [0xFFFFFFFE] + [0xFFFFFFFF] * (128 - 10)
+    fatbuf = b"".join(struct.pack("<I", x) for x in fat)
+
+    def dirent(name, typ, child, start, size):
+        e = bytearray(128)
+        nb = name.encode("utf-16le") + b"\x00\x00"
+        e[:len(nb)] = nb
+        struct.pack_into("<H", e, 0x40, len(nb))
+        e[0x42] = typ
+        struct.pack_into("<I", e, 0x4C, child)
+        struct.pack_into("<I", e, 0x74, start)
+        struct.pack_into("<Q", e, 0x78, size)
+        return bytes(e)
+
+    d = dirent("Root Entry", 5, 1, 0, 0) + dirent("flag.txt", 2, 0xFFFFFFFF, 2, 4096) + bytes(256)
+    return bytes(hdr) + fatbuf + d + payload
+
+
 def fixture_lnk():
     import struct
     flags = 0x04 | 0x08 | 0x10 | 0x20 | 0x40
@@ -1283,6 +1321,7 @@ FIXTURES = [
     ("wav_lsb.wav", fixture_wav_lsb, ["音频 LSB 候选", "flag{wav_lsb}"]),
     ("dtmf.wav", fixture_dtmf_wav, ["DTMF", "1800#*5"]),
     ("link.lnk", fixture_lnk, ["LNK", "flag{lnk_args}"]),
+    ("compound.doc", fixture_ole, ["OLE", "flag{ole_stream}"]),
     ("wav_extensible.wav", fixture_wav_extensible, ["WAVE_FORMAT_EXTENSIBLE", "flag{wav_extensible}"]),
     ("wav_stereo_lsb.wav", fixture_wav_stereo_lsb, ["音频 LSB 候选", "flag{wav_stereo}"]),
     ("wav_trailer.wav", fixture_wav_trailer, ["RIFF 结束之后还有数据", "flag{wav_trailer}"]),
