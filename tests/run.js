@@ -1338,6 +1338,12 @@ console.log('\n== TIFF 像素 ==');
   const rgp = M.auditTIFF(gp, 'g16pred.tif');
   check('TIFF 16 位 predictor 2', !!rgp.image && rgp.parsed.pixels.predictor === 2 && rgp.parsed.pixels.bits === 16 && rgp.image.channels.R[85] === 0x12,
     rgp.image ? String(rgp.image.channels.R[85]) : 'no image');
+  const bh = Buffer.alloc(8); bh.write('II', 0, 'latin1'); bh.writeUInt16LE(42, 2); bh.writeUInt32LE(8, 4);
+  const bi = Buffer.alloc(18); bi.writeUInt16LE(1, 0); bi.writeUInt16LE(256, 2); bi.writeUInt16LE(3, 4); bi.writeUInt32LE(1, 6); bi.writeUInt16LE(65535, 10);
+  let bombOk = true, bombRes = null;
+  try { bombRes = M.auditTIFF(Buffer.concat([bh, bi]), 'bomb.tif'); } catch (e) { bombOk = false; }
+  check('TIFF 头部炸弹不抛异常', bombOk && !!bombRes && bombRes.findings.some(f => f.type === 'tiff_pixels_skip'),
+    bombRes ? bombRes.findings.map(f => f.type).join(',') : 'threw');
   const an = M.analyze(lzw, 'lzw.tif', {});
   check('TIFF 进入图像扫描链', findingText(an).indexOf('flag{tiff_tail}') >= 0, findingText(an).slice(0, 160));
 }
