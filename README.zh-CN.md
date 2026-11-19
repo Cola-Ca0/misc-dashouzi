@@ -216,10 +216,10 @@ python build.py
 # 发布版：不内联壁纸（仓库里的成品就是这个）
 python build.py --no-bg
 
-# 回归测试（单元向量 + 127 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
+# 回归测试（单元向量 + 129 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
 node tests/run.js
 
-# 浏览器自检（当前 147 项）
+# 浏览器自检（当前 149 项）
 msedge --headless=new --dump-dom "file:///.../misc-dashouzi.html?selftest=1"
 
 # 浏览器冒烟（需要 Edge；验证自检、上传、位平面缩放、批量、双图对比、零尺寸、50 文件上限、Worker）
@@ -281,7 +281,7 @@ companion.py        可选的本地工具桥（stdlib，仅回环）
 
 ## 版本
 
-v1.1.0（2026-11-19）— 编码工具箱独立页（CyberChef 式双向编解码、冷门 Base 16/36/45/58Check/85(IPv6)/Z85/92/100、自定义 Base 字母表、编码爆破与多层自动链）；新格式 PSD/SQLite 行/Git 对象与 packfile（OFS+REF delta）/FLAC/ISO9660/MP4/Java class/PCX/TIFF 像素/PDF LZW；7Z LZMA/LZMA2 成员解压（Delta/x86 BCJ、压缩头）；XZ·LZMA2（多块、连接流、Delta、x86 BCJ、CRC32/CRC64/SHA-256、尾部附加）；Mach-O（大小端、fat_arch_64、段/节、overlay）；Unicode Tag/变体选择符隐写。Node 回归 510 项（127 fixture）、浏览器自检 147 项、CDP 冒烟全绿。
+v1.1.0（2026-11-19）— 编码工具箱独立页（CyberChef 式双向编解码、冷门 Base 16/36/45/58Check/85(IPv6)/Z85/92/100、自定义 Base 字母表、编码爆破与多层自动链）；新格式 PSD/SQLite 行/Git 对象与 packfile（OFS+REF delta）/FLAC/ISO9660/MP4/Java class/PCX/TIFF 像素/PDF LZW；7Z LZMA/LZMA2 成员解压（Delta/x86 BCJ、压缩头）；XZ·LZMA2（多块、连接流、Delta、x86 BCJ、CRC32/CRC64/SHA-256、尾部附加）；Mach-O（大小端、fat_arch_64、段/节、overlay）；Unicode Tag/变体选择符隐写。Node 回归 514 项（129 fixture）、浏览器自检 149 项、CDP 冒烟全绿。
 v1.0.0（2026-11-10）— 首个正式版，功能冻结。相比 v0.17.0 没有功能变化：去掉 ATRI 壁纸（发布版不内联第三方图片）、补 LICENSE、整理文档。Node 回归 296 项、浏览器自检 96 项、CDP 冒烟全绿。
 v0.17.0（2026-11-10）— 分析搬进 Web Worker（大文件不再冻住界面，可随时取消，建不起来自动退回主线程）；批量分析同样走 Worker；批量导出认报告模板；批量失败原因直接列出来；复制/下载失败会提示；PDF 增量更新改为取最后一份对象。Node 回归 296 项、浏览器自检 96 项、CDP 冒烟（含 Worker 断言）全绿。
 v0.16.0（2026-11-10）— 四维审查（4 镜头初审 + 交叉对抗复核，47 条 → 确认 29）后的修复：两个死循环（7Z kName 长度、ID3 加密帧位置）、大文件后半段的压缩流不再被命中数预算饿死、已知格式解析失败退到通用兜底、PDF ASCII85 的 `<` 被当前缀删掉、音频/图像去重只看前缀、PNG 尺寸炸弹、GIF 帧数上限、WAV 整块复制、ascii/strings 逐字符拼串（50MB 文本 2.3 秒 + 1.6GB → 11 毫秒）。模块清单与版本号收敛到单一真理源并在构建时注入。Node 回归 294 项、浏览器自检 96 项、CDP 冒烟全绿。

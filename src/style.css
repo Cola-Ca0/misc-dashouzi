@@ -169,7 +169,9 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
 .pv {
   flex: 0 0 300px; width: 300px; min-height: 0; display: flex; flex-direction: column;
   border-left: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(252,249,242,.92), rgba(247,241,231,.94));
+  /* 半透明：让 body 的壁纸一直铺到右栏，而不是被一块实色面板截断 */
+  background: linear-gradient(180deg, rgba(252,249,242,.34), rgba(247,241,231,.44));
+  backdrop-filter: blur(4px) saturate(1.02);
   transition: width .16s ease, flex-basis .16s ease;
 }
 .pv.collapsed { flex-basis: 40px; width: 40px; }
@@ -182,7 +184,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
 .pv-toggle:hover { color: var(--accent); border-color: var(--accent); }
 .pv-body { flex: 1; min-height: 0; overflow: auto; padding: 10px; display: flex; align-items: flex-start; justify-content: center; }
 #pv-canvas { display: none; max-width: 100%; height: auto; image-rendering: pixelated; border-radius: 8px; box-shadow: 0 2px 12px rgba(40,60,70,.12); }
-.pv-empty { color: var(--muted); font-size: 12px; line-height: 1.8; text-align: center; padding: 28px 8px; }
+.pv-empty { color: var(--muted); font-size: 12px; line-height: 1.8; text-align: center; padding: 22px 8px; background: rgba(251,247,238,.24); border-radius: 10px; text-shadow: 0 1px 0 rgba(255,255,255,.75); }
 .pv-foot { padding: 6px 10px 10px; font-size: 11px; color: var(--muted); line-height: 1.5; min-height: 18px; }
 @media (max-width: 980px) { .pv { display: none; } }
 .empty {

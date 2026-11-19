@@ -1229,6 +1229,24 @@ def fixture_git_pack_ref():
     return bytes(pack)
 
 
+def fixture_git_pack_ref_chain():
+    """OFS_DELTA 的基底是一个 REF_DELTA，且 REF 的基底排在最后。"""
+    blob = b"flag{git_ref_base}\n"
+    mid = blob + b"flag{git_ref_mid}"
+    result = mid + b"flag{ofs_after_ref}"
+    d1 = _git_delta(blob, mid)
+    d2 = _git_delta(mid, result)
+    base_sha = hashlib.sha1(b"blob " + str(len(blob)).encode() + b"\x00" + blob).digest()
+    pack = bytearray(b"PACK" + struct.pack(">II", 2, 3))
+    ref_off = len(pack)
+    pack += _git_obj_header(7, len(d1)) + base_sha + zlib.compress(d1, 9)
+    ofs_off = len(pack)
+    pack += _git_obj_header(6, len(d2)) + _git_enc_ofs(ofs_off - ref_off) + zlib.compress(d2, 9)
+    pack += _git_obj_header(3, len(blob)) + zlib.compress(blob, 9)
+    pack += hashlib.sha1(pack).digest()
+    return bytes(pack)
+
+
 def fixture_bzip2_two():
     import bz2
     return bz2.compress(b"flag{first_bz2}", 9) + bz2.compress(b"flag{second_bz2}", 9)
@@ -1821,25 +1839,37 @@ def _vint(n):
 
 SEVEN_LZMA2_B64 = "N3q8ryccAAQIh3N4gwEAAAAAAAAVAAAAAAAAAGizNMbgBbcBCF0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVdrM/gAOAAegBrXQAAgTMHrg/VOCyVOcZm2o3z7dDuG8aA13xDxmuYFiv/T/EH5V0oHveusz2OHSEXbUv2PtBOLnwr6LBgBrlmVLRDZcYrMziutuRbKW9QGrVIm2GuLsDNwE7h/F5ZjXqeJaKGlxP2XQ1pVWsAAAAXBoEQAQlzAAcLAQABISEBGAx7AAA="
 SEVEN_LZMA1_B64 = "N3q8ryccAARmxbe3hQEAAAAAAAAVAAAAAAAAAJP1by0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVeWHdL//+vPMqA4AB6AG5dAACBMweuD9U4Juj5xmbajhxhUxv9cidStW4NyT7dWZNQtxVi9CmYQPTPFsBkJxl8lSOKv9wL9PICN+ia3gjjZNA9ihN7VyyAGKTvhIt4BTYWOcC5lBJSKEnoaRQn57hdB+6LvcOq7tvN+7f/AAAAABcGgQ8BCXYABwsBAAEhIQEYDHsAAA=="
-SEVEN_BCJ_B64 = "N3q8ryccAAQhbpQbigEAAAAAAAAWAAAAAAAAAPUIwv7gBbcBCF0AMxsIR1hFaDQlen/FR+m8Bx9qKAzgPgGXc6/TY+0hGRco3UQh8L3nPdxvA00EDX8ySVdGzxUjVJ/r6/ds7hBqH6PylmcpiqIelmoqwurZ6fqTEjPjtGfQqbBxfhwbLo7zBZymXt8o6bKMaIFw8fvqy4X/A6K78ySCbdqUeI3TBboqUifXNSF5TjBP1c3SqfGI71jKcmDan40EoVVJahL5FHMSHX6kbKVThyk/GAzoOYWDYUgJ1ikcWnNANU+XIVqbm6DE+MxgrwiVM4VL/oTEtcE7d6VAOkCDs28LGYmrbOFbYXv0AYLxI5k4k3uTBXyUvBqwqxrqeLD8z4JhoEz+Nb1JHYVdrM/gAOAAggByXQAAgTMHrg/VOCyVOcZglwW+6URcNIhaOGWcmxUC19UE5t96oJj1QKxa+KUm2M8FVltptv7/GRoxy4JZJWkNQueOQiObqERO2ralHZR9W9o7JE/aSQqGY4hai7vvc11ctHB/h3brk1RV3lH7g2m/Ls82AAAAFwaBEAEJegAHCwEAASEhARgMgIMAAA=="
+SEVEN_BCJ_B64 = "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"
+SEVEN_DELTA_B64 = "N3q8ryccAAT4rO3qfAAAAAAAAAAUAAAAAAAAAMhzkFzgARcAHV0AMxsIR1hFaDUuGTrAdY1QPa3zS1Cd/BVlshJkoAAA4ABSAE9dAACBMweuD9BaW3yfORCcbftpdvnMqEHRcak5SERo0ggqXdljCnN0xQmyTISLuyHB/VHw3lllglk3P1fP42rfdEekUL3dV96Fz8juqyaqAAAAFwYlAQlXAAcLAQABISEBGAxTAAA="
 SEVEN_TREE_B64 = "N3q8ryccAASeAmrDowAAAAAAAAAWAAAAAAAAAMGTdczgABkAFV0AMxsIR1hHVyfAUUKWPtoOoH8yIAAAAOAA6gB+XQAAgTMHrg/P2W+8D+vqnL8M3XsjOxwicM7Oo85TopWV5dl64p7zx4yo/FLqN2KgnpfLN2SMeqIwXzr0RY0wLVtQwtGC8UyiiZLDYuPCP/a7szORWHJbd43kjuuDkNn6A0ugKUvckSebvw+pNbpZQVYLT00aGZFTt9PD6hpzAAAAFwYdAQmAhgAHCwEAASEhARgMgOsAAA=="
+
+
+def _seven_data(b64, size):
+    """py7zr 生成后内嵌；构建时至少验证签名与长度，避免常量悄悄损坏。"""
+    data = base64.b64decode(b64)
+    assert data[:6] == b"7z\xbc\xaf'\x1c" and len(data) == size, "7z fixture 损坏"
+    return data
 
 
 def fixture_7z():
     """真实 7z（py7zr：LZMA2 + 压缩头），验证成员解压。"""
-    return base64.b64decode(SEVEN_LZMA2_B64)
+    return _seven_data(SEVEN_LZMA2_B64, 440)
 
 
 def fixture_7z_lzma1():
-    return base64.b64decode(SEVEN_LZMA1_B64)
+    return _seven_data(SEVEN_LZMA1_B64, 442)
 
 
 def fixture_7z_bcj():
-    return base64.b64decode(SEVEN_BCJ_B64)
+    return _seven_data(SEVEN_BCJ_B64, 2449)
+
+
+def fixture_7z_delta():
+    return _seven_data(SEVEN_DELTA_B64, 176)
 
 
 def fixture_7z_tree():
-    return base64.b64decode(SEVEN_TREE_B64)
+    return _seven_data(SEVEN_TREE_B64, 217)
 
 
 def fixture_mp3_frames():
@@ -1916,6 +1946,7 @@ FIXTURES = [
     ("git_blob.obj", fixture_git_blob, ["Git blob 对象", "flag{git_loose_blob}"]),
     ("repo.pack", fixture_git_pack, ["Git packfile", "flag{git_pack_blob}", "flag{git_pack_delta}", "flag{git_pack_commit}"]),
     ("ref.pack", fixture_git_pack_ref, ["Git packfile", "flag{git_ref_base}", "flag{git_ref_delta}"]),
+    ("refchain.pack", fixture_git_pack_ref_chain, ["Git packfile", "flag{git_ref_mid}", "flag{ofs_after_ref}"]),
     ("tagged.flac", fixture_flac, ["FLAC 44100 Hz", "Vorbis 注释", "PADDING 块里有", "内嵌图片", "flag{flac_vorbis}", "flag{flac_padding}", "flag{flac_app}"]),
     ("unicode_tag.txt", fixture_unicode_tag, ["Unicode Tag 隐写", "flag{unicode_tag_stego}", "变体选择符隐写", "flag{vs_stego}"]),
     ("flagdisk.iso", fixture_iso, ["ISO9660", "FLAGDISK", "flag{iso9660_file}", "flag{iso_tail}"]),
@@ -2002,8 +2033,9 @@ FIXTURES = [
     ("rar4_stored.rar", fixture_rar4, ["RAR", "flag{rar_stored}"]),
     ("seven_plain.7z", fixture_7z, ["7Z", "flag.txt", "flag{7z_lzma2_member}"]),
     ("seven_lzma1.7z", fixture_7z_lzma1, ["7Z", "flag{7z_lzma2_member}"]),
-    ("seven_bcj.7z", fixture_7z_bcj, ["7Z", "flag{7z_lzma2_member}"]),
+    ("seven_bcj.7z", fixture_7z_bcj, ["7Z", "flag{7z_bcj}"]),
     ("seven_tree.7z", fixture_7z_tree, ["7Z", "flag{tree_a}", "flag{tree_b}"]),
+    ("seven_delta.7z", fixture_7z_delta, ["7Z", "flag{7z_delta}"]),
     ("mp3_frames.mp3", fixture_mp3_frames, ["MP3 帧", "flag{mp3bits}"]),
     ("pdf_objects.pdf", fixture_pdf, ["PDF", "flag{pdf_embedded}"]),
     ("zip_descriptor.zip", fixture_zip_descriptor, ["descriptor.txt", "flag{zip_descriptor}"]),

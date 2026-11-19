@@ -766,7 +766,7 @@
     let p = 12, done = 0, deltaOk = 0, deltaFail = 0, totalOut = 0, artifactsOut = 0, seq = 0;
     const record = (objOff, type, data) => {
       byOffset.set(objOff, { type, data });
-      if (MDZ.sha1) bySha.set(gitObjectSha(type, data), { type, data });
+      bySha.set(gitObjectSha(type, data), { type, data });
       hist[type] = (hist[type] || 0) + 1;
       totalOut += data.length;
       if (type !== 'tree') {
@@ -793,11 +793,12 @@
       const h = gitPackVarint(b, p);
       if (!h || !h.type) break;
       p = h.next;
-      let base = null, refSha = null;
+      let base = null, refSha = null, baseOff = null;
       if (h.type === 6) {
         let c = b[p++], off = c & 0x7f;
         while (c & 0x80) { c = b[p++]; off = ((off + 1) << 7) | (c & 0x7f); }
-        base = byOffset.get(objOff - off) || null;
+        baseOff = objOff - off;
+        base = byOffset.get(baseOff) || null;
       } else if (h.type === 7) {
         refSha = MDZ.bytesToHex(b.subarray(p, p + 20));
         p += 20;
@@ -811,7 +812,11 @@
         data = z.out.subarray(0, Math.min(h.size, z.out.length));
         record(objOff, type, data);
       } else if (h.type === 6) {
-        if (!base) { deltaFail++; done++; continue; }
+        if (!base) {
+          // 基底可能是一个还没回填的 REF_DELTA，先挂起
+          pending.push({ kind: 'ofs', objOff, baseOff, delta: z.out });
+          done++; continue;
+        }
         const merged = gitDeltaApply(base.data, z.out);
         if (!merged) { deltaFail++; done++; continue; }
         type = base.type; deltaOk++;
@@ -823,7 +828,7 @@
           else { deltaFail++; }
         } else {
           // 基底可能排在后面，先记下来，扫描完整个 pack 再按 SHA 回填
-          pending.push({ objOff, baseSha: refSha, delta: z.out });
+          pending.push({ kind: 'ref', objOff, baseSha: refSha, delta: z.out });
         }
         done++;
         continue;
@@ -838,12 +843,12 @@
         break;
       }
     }
-    // 多轮回填 REF_DELTA：delta 可以引用排在它后面的对象
+    // 多轮回填：REF_DELTA 按 SHA 找、OFS_DELTA 按偏移找；基底也可能是一个待回填的 delta
     for (let pass = 0; pass < 8 && pending.length; pass++) {
       const next = [];
       let progressed = false;
       for (const q of pending) {
-        const base = bySha.get(q.baseSha);
+        const base = q.kind === 'ofs' ? byOffset.get(q.baseOff) : bySha.get(q.baseSha);
         if (!base) { next.push(q); continue; }
         const merged = gitDeltaApply(base.data, q.delta);
         if (!merged) { next.push(q); continue; }

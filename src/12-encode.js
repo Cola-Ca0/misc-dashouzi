@@ -490,10 +490,7 @@
   function b36decode(s) { return baseBigDecode(String(s).toLowerCase(), B36_A); }
 
   function sha256Bytes(bytes) {
-    const h = MDZ.sha256(toU8(bytes));
-    const out = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) out[i] = parseInt(h.substr(i * 2, 2), 16);
-    return out;
+    return hexDecode(MDZ.sha256(toU8(bytes)));
   }
   function b58checkEncode(input) {
     const b = toU8(input);

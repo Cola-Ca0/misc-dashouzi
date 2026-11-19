@@ -206,8 +206,13 @@ console.log('\n== 归档 / PDF / MP3 ==');
   check('7Z LZMA1 成员解压', sz1.artifacts.some(a => a.name === 'flag.txt' && a.bytes.length === 440)
     && M.flags(sz1).indexOf('flag{7z_lzma2_member}') >= 0, sz1.findings.map(f => f.title).join(' | '));
   const szb = M.analyze(rd('seven_bcj.7z'), 'seven_bcj.7z', {});
-  check('7Z x86 BCJ + LZMA2 成员解压', szb.artifacts.some(a => a.name === 'notes.bin' && a.bytes.length === 1024)
-    && M.flags(szb).indexOf('flag{7z_lzma2_member}') >= 0, szb.findings.map(f => f.title).join(' | '));
+  const bcjWant = Buffer.concat([rd('bcj_raw.bin'), Buffer.from('flag{7z_bcj}')]);
+  check('7Z x86 BCJ + LZMA2 成员解压', szb.artifacts.some(a => a.name === 'data.bin' && Buffer.from(a.bytes).equals(bcjWant)),
+    szb.findings.map(f => f.title).join(' | ') + ' ' + szb.artifacts.map(a => a.name + ':' + a.bytes.length).join(','));
+  const szd = M.analyze(rd('seven_delta.7z'), 'seven_delta.7z', {});
+  const deltaWant = Buffer.from('flag{7z_delta}'.repeat(20));
+  check('7Z Delta 过滤器还原', szd.artifacts.some(a => a.name === 'data.bin' && Buffer.from(a.bytes).equals(deltaWant)),
+    szd.findings.map(f => f.title).join(' | '));
   const szt = M.analyze(rd('seven_tree.7z'), 'seven_tree.7z', {});
   const ta = szt.artifacts.find(a => a.name === 'a.txt'), tb = szt.artifacts.find(a => a.name === 'b.txt');
   check('7Z 目录/空文件不偏移成员映射', !!ta && !!tb && Buffer.from(ta.bytes).toString('latin1').indexOf('flag{tree_a}') >= 0
@@ -1595,6 +1600,11 @@ console.log('\n== Git 对象 ==');
   const rtxt = rp.findings.map(f => (f.title || '') + ' ' + (f.actual || '') + ' ' + (f.preview || '')).join('\n');
   check('Git REF_DELTA 基底后置回填', rtxt.indexOf('flag{git_ref_base}') >= 0 && rtxt.indexOf('flag{git_ref_delta}') >= 0
     && !rp.findings.some(f => f.type === 'git_delta_skip'), rtxt.slice(0, 300));
+  const chainPack = fs.readFileSync(path.join(__dirname, 'fixtures', 'refchain.pack'));
+  const rc = M.auditGitPack(chainPack, 'refchain.pack');
+  const ctxt = rc.findings.map(f => (f.title || '') + ' ' + (f.actual || '') + ' ' + (f.preview || '')).join('\n');
+  check('Git OFS_DELTA 基底为后置 REF_DELTA', ctxt.indexOf('flag{git_ref_mid}') >= 0
+    && ctxt.indexOf('flag{ofs_after_ref}') >= 0 && !rc.findings.some(f => f.type === 'git_delta_skip'), ctxt.slice(0, 300));
 }
 console.log('\n== SQLite 行扫描 ==');
 {

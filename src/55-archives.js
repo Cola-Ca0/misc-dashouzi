@@ -502,6 +502,7 @@
         if (t === 0x0D) {
           for (let i = 0; i < s.folders.length; i++) {
             const z = sevenNum(b, p); if (!z) return null;
+            if (z.value > 65536) return null;
             s.counts[i] = z.value; p = z.next;
           }
         } else if (t === 0x09) {
@@ -527,6 +528,7 @@
     for (let i = 0; i < s.folders.length; i++) {
       const f = s.folders[i];
       const c = Math.max(1, s.counts[i] || 1);
+      if (c > 65536) return null;
       const arr = s.sizes[i] || (s.sizes[i] = []);
       const final = f.unpackSizes[f.finalOut] || 0;
       const known = arr.reduce((a, x) => a + x, 0);
@@ -539,9 +541,10 @@
     const lz = folder.coders.find(c => sevenMethod(c.id) === 'lzma2' || sevenMethod(c.id) === 'lzma1');
     if (!lz) return { error: '7Z 压缩方法暂不支持（' + folder.coders.map(c => sevenMethodName(c.id)).join(' + ') + '）' };
     const outSize = folder.unpackSizes[lz.outIndex] || 0;
+    if (outSize > cap) return { error: `7Z 成员声明解压后 ${outSize} 字节，超过上限` };
     let data;
     if (sevenMethod(lz.id) === 'lzma2') {
-      const z = MDZ.lzma2Decompress ? MDZ.lzma2Decompress(packed, 0, Math.max(cap, outSize)) : null;
+      const z = MDZ.lzma2Decompress ? MDZ.lzma2Decompress(packed, 0, cap) : null;
       if (!z || z.error || !z.out) return { error: (z && z.error) || 'LZMA2 解压失败' };
       data = z.out;
     } else {
@@ -551,7 +554,7 @@
       let n = outSize;
       for (let i = 0; i < 8; i++) { synth[5 + i] = n % 256; n = Math.floor(n / 256); }
       synth.set(packed, 13);
-      const z = MDZ.lzmaDecompressAlone ? MDZ.lzmaDecompressAlone(synth, { maxOut: Math.max(cap, outSize) }) : null;
+      const z = MDZ.lzmaDecompressAlone ? MDZ.lzmaDecompressAlone(synth, { maxOut: cap }) : null;
       if (!z || z.error || !z.out) return { error: (z && z.error) || 'LZMA 解压失败' };
       data = z.out;
     }
@@ -574,6 +577,9 @@
   }
 
   function sevenDecodeStreams(b, packedBase, streams, cap) {
+    let expected = 0;
+    for (const f of streams.folders) expected += f.unpackSizes[f.finalOut] || 0;
+    if (expected > cap) return { error: `7Z 声明解压总量 ${expected} 字节，超过上限` };
     let packIdx = 0, cursor = packedBase + streams.packPos, totalOut = 0;
     const outputs = [];
     for (const f of streams.folders) {
@@ -647,7 +653,7 @@
       encoded = true;
       const st = sevenStreams(hdr, 1);
       if (!st) return null;
-      const dec = sevenDecodeStreams(b, 32, st.streams, 64 * 1024 * 1024);
+      const dec = sevenDecodeStreams(b, 32, st.streams, cap);
       if (dec.error || !dec.outputs.length) return null;
       hdr = dec.outputs[0];
     }
