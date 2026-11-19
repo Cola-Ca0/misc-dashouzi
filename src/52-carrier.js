@@ -877,11 +877,17 @@
     for (const f of flags.slice(0, 10)) {
       findings.push(finding('L3', 'java_flag', `常量池里出现 ${f}`, { confidence: 0.99, actual: f }));
     }
-    const txt = utf8s.join('\n').slice(0, 1 << 20);
+    const full = utf8s.join('\n');
+    const txt = full.slice(0, 1 << 20);
+    if (full.length > txt.length) {
+      findings.push(finding('L3', 'java_truncated', `常量池字符串 ${full.length} 字符，产物只保留前 1MB`, {
+        confidence: 0.6, actual: `已导出 ${txt.length}/${full.length} 字符`
+      }));
+    }
     const tb = typeof TextEncoder !== 'undefined'
       ? new TextEncoder().encode(txt)
       : Uint8Array.from(txt, c => c.charCodeAt(0) & 255);
-    artifacts.push(artifact('java-strings.txt', tb, 'Java 常量池字符串'));
+    artifacts.push(artifact('java-strings.txt', tb, 'Java 常量池字符串' + (full.length > txt.length ? '（截断）' : '')));
     return { findings, artifacts, image: null, parsed: { major, minor, cpCount, utf8s } };
   }
 

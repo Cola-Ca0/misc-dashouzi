@@ -884,6 +884,79 @@ def fixture_tiff_packbits():
     return buf.getvalue()
 
 
+def _tiff_save(im, **kw):
+    buf = io.BytesIO()
+    im.save(buf, format="TIFF", **kw)
+    return buf.getvalue()
+
+
+def fixture_tiff_deflate():
+    from PIL import Image
+    im = Image.new("RGB", (16, 16), (0, 0, 0))
+    im.putpixel((5, 5), (255, 0, 0))
+    return _tiff_save(im, compression="tiff_adobe_deflate")
+
+
+def fixture_tiff_gray16():
+    from PIL import Image
+    im = Image.new("I;16", (16, 16))
+    im.putpixel((5, 5), 0x1234)
+    return _tiff_save(im, compression="raw")
+
+
+def fixture_tiff_palette():
+    from PIL import Image
+    im = Image.new("P", (16, 16), 0)
+    pal = [0, 0, 0] * 256
+    pal[15:18] = [255, 0, 0]
+    im.putpalette(pal)
+    im.putpixel((5, 5), 5)
+    return _tiff_save(im, compression="raw")
+
+
+def fixture_tiff_pred2():
+    from PIL import Image
+    im = Image.new("RGB", (16, 16), (0, 0, 0))
+    im.putpixel((5, 5), (255, 0, 0))
+    return _tiff_save(im, compression="tiff_lzw", tiffinfo={317: 2})
+
+
+def fixture_tiff_pal4():
+    w = h = 16
+    rows = []
+    for y in range(h):
+        row = bytearray(8)
+        if y == 5:
+            row[5 // 2] |= 5 if (5 & 1) else (5 << 4)
+        rows.append(bytes(row))
+    pixels = b"".join(rows)
+    pixel_off = 144
+    cmap_off = pixel_off + len(pixels)
+
+    def ent(tag, typ, count, val):
+        return struct.pack("<HHI", tag, typ, count) + val
+
+    entries = [
+        ent(256, 3, 1, struct.pack("<H", w) + bytes([0, 0])),
+        ent(257, 3, 1, struct.pack("<H", h) + bytes([0, 0])),
+        ent(258, 3, 1, struct.pack("<H", 4) + bytes([0, 0])),
+        ent(259, 3, 1, struct.pack("<H", 1) + bytes([0, 0])),
+        ent(262, 3, 1, struct.pack("<H", 3) + bytes([0, 0])),
+        ent(273, 4, 1, struct.pack("<I", pixel_off)),
+        ent(277, 3, 1, struct.pack("<H", 1) + bytes([0, 0])),
+        ent(278, 3, 1, struct.pack("<H", h) + bytes([0, 0])),
+        ent(279, 4, 1, struct.pack("<I", len(pixels))),
+        ent(320, 3, 3 * 16, struct.pack("<I", cmap_off)),
+    ]
+    ifd = struct.pack("<H", len(entries)) + b"".join(entries) + struct.pack("<I", 0)
+    body = b"II" + struct.pack("<H", 42) + struct.pack("<I", 8) + ifd
+    body += bytes([0]) * (pixel_off - len(body)) + pixels
+    cmap = [0] * 48
+    cmap[5] = 65535
+    body += b"".join(struct.pack("<H", v) for v in cmap)
+    return body
+
+
 def fixture_pcx():
     w = h = 16
     hdr = bytearray(128)
@@ -1657,6 +1730,11 @@ FIXTURES = [
     ("lzw.tif", fixture_tiff_lzw, ["TIFF", "LZW", "flag{tiff_tail}"]),
     ("packbits.tif", fixture_tiff_packbits, ["TIFF", "PackBits"]),
     ("lzw.pdf", fixture_pdf_lzw, ["PDF 内嵌文件", "flag{pdf_lzw_stream}"]),
+    ("deflate.tif", fixture_tiff_deflate, ["TIFF", "Deflate"]),
+    ("gray16.tif", fixture_tiff_gray16, ["TIFF", "16 位"]),
+    ("palette.tif", fixture_tiff_palette, ["TIFF", "像素"]),
+    ("pred2.tif", fixture_tiff_pred2, ["TIFF", "predictor 2"]),
+    ("pal4.tif", fixture_tiff_pal4, ["TIFF", "像素"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),

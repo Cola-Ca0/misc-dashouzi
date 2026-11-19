@@ -458,8 +458,10 @@
     if (!offsets.length || !counts.length) return { error: '缺少 strip offsets' };
     if (![1, 4, 8, 16].includes(bits)) return { error: bits + ' 位样本暂不支持' };
     if (predictor === 2 && bits !== 8) return { error: 'predictor 2 目前只解 8 位样本' };
+    if (spp < 1 || spp > 8) return { error: '样本数异常（' + spp + '）' };
     const bytesPerSample = bits === 16 ? 2 : 1;
     const rowBytes = Math.ceil(w * spp * bits / 8);
+    if (rowBytes * h > 128 * 1024 * 1024) return { error: '像素数据过大（>128MB）' };
     const raw = new Uint8Array(rowBytes * h);
     let outRow = 0, maxEnd = 0;
     for (let s = 0; s < offsets.length && outRow < h; s++) {
@@ -496,21 +498,40 @@
     };
     let palette = null;
     if (photo === 3) {
-      const cm = tiffNums(get(0x0140)) || [];
       const size = 1 << bits;
-      if (cm.length >= size * 3) {
-        palette = new Uint8Array(size * 3);
+      const cmTag = get(0x0140);
+      palette = new Uint8Array(size * 3);
+      const rd16 = o => little ? (b[o] | (b[o + 1] << 8)) : ((b[o] << 8) | b[o + 1]);
+      if (cmTag && cmTag.valueOffset != null && cmTag.valueOffset + size * 6 <= b.length) {
+        // parseEXIF 只保留前 32 个数组值，色表要按原始偏移整段读
         for (let i = 0; i < size; i++) {
-          palette[i * 3] = (cm[i] >> 8) & 255;
-          palette[i * 3 + 1] = (cm[i + size] >> 8) & 255;
-          palette[i * 3 + 2] = (cm[i + 2 * size] >> 8) & 255;
+          palette[i * 3] = rd16(cmTag.valueOffset + i * 2) >> 8;
+          palette[i * 3 + 1] = rd16(cmTag.valueOffset + size * 2 + i * 2) >> 8;
+          palette[i * 3 + 2] = rd16(cmTag.valueOffset + size * 4 + i * 2) >> 8;
         }
+      } else {
+        const cm = tiffNums(cmTag) || [];
+        if (cm.length >= size * 3) {
+          for (let i = 0; i < size; i++) {
+            palette[i * 3] = (cm[i] >> 8) & 255;
+            palette[i * 3 + 1] = (cm[i + size] >> 8) & 255;
+            palette[i * 3 + 2] = (cm[i + 2 * size] >> 8) & 255;
+          }
+        } else palette = null;
       }
     }
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = y * w + x;
-        if (bits === 1 || bits === 4) {
+        if (photo === 3) {
+          let idx;
+          if (bits === 1) idx = (raw[y * rowBytes + (x >> 3)] >> (7 - (x & 7))) & 1;
+          else if (bits === 4) idx = (raw[y * rowBytes + (x >> 1)] >> ((x & 1) ? 0 : 4)) & 15;
+          else idx = sample(x, y, 0);
+          if (palette && idx * 3 + 2 < palette.length) {
+            R[i] = palette[idx * 3]; G[i] = palette[idx * 3 + 1]; B[i] = palette[idx * 3 + 2];
+          }
+        } else if (bits === 1 || bits === 4) {
           const byte = raw[y * rowBytes + ((x * bits) >> 3)];
           let v;
           if (bits === 1) v = (byte >> (7 - (x & 7))) & 1;
@@ -521,11 +542,6 @@
         } else if (photo === 2) {
           R[i] = sample(x, y, 0); G[i] = sample(x, y, 1); B[i] = sample(x, y, 2);
           if (spp >= 4) A[i] = sample(x, y, 3);
-        } else if (photo === 3) {
-          const idx = sample(x, y, 0);
-          if (palette && idx * 3 + 2 < palette.length) {
-            R[i] = palette[idx * 3]; G[i] = palette[idx * 3 + 1]; B[i] = palette[idx * 3 + 2];
-          }
         } else if (photo === 0 || photo === 1) {
           let g = sample(x, y, 0);
           if (photo === 0) g = 255 - g;
@@ -1635,6 +1651,7 @@
     if (![1, 2, 4, 8].includes(hdr.bpp) || hdr.planes < 1 || hdr.planes > 4) return { error: 'bpp/plane 不支持' };
     if (!hdr.bytesPerLine) return { error: 'bytesPerLine=0' };
     const need = h * hdr.planes * hdr.bytesPerLine;
+    if (!(need > 0) || need > 64 * 1024 * 1024) return { error: '像素数据过大' };
     const raw = new Uint8Array(need);
     let p = 128, o = 0;
     while (o < need && p < b.length) {

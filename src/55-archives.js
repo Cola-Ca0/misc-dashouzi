@@ -420,8 +420,8 @@
     return s.replace(/;1$/, '').replace(/\.$/, '');
   }
 
-  function isoWalk(b, blockSize, lba, size, prefix, out, depth, seen, joliet) {
-    if (depth > 12 || out.length >= 2000) return;
+  function isoWalk(b, blockSize, lba, size, prefix, out, depth, seen, joliet, state) {
+    if (depth > 12 || out.length >= 2000) { state.truncated = true; return; }
     const key = lba + ':' + size;
     if (seen.has(key)) return;
     seen.add(key);
@@ -431,13 +431,13 @@
     while (p + 33 <= end && out.length < 2000) {
       const len = b[p];
       if (len === 0) { p = (Math.floor(p / blockSize) + 1) * blockSize; continue; }
-      if (len < 34 || p + len > end) break;
+      if (len < 34 || p + len > end) { state.broken = true; break; }
       const rec = isoRecord(b, p, end);
-      if (!rec) break;
+      if (!rec) { state.broken = true; break; }
       const nm = isoName(rec, joliet);
       if (nm && nm !== '.' && nm !== '..') {
         const path = prefix ? prefix + '/' + nm : nm;
-        if (rec.flags & 0x02) isoWalk(b, blockSize, rec.lba, rec.size, path, out, depth + 1, seen, joliet);
+        if (rec.flags & 0x02) isoWalk(b, blockSize, rec.lba, rec.size, path, out, depth + 1, seen, joliet, state);
         else out.push({ path, lba: rec.lba, size: rec.size });
       }
       p += len;
@@ -466,7 +466,8 @@
     const root = isoRecord(b, rootOff, rootOff + 4096);
     if (!root) return { findings: [finding('L0', 'format', 'ISO 根目录记录无效')], artifacts, image: null };
     const files = [];
-    isoWalk(b, blockSize, root.lba, root.size, '', files, 0, new Set(), joliet);
+    const walkState = { truncated: false, broken: false };
+    isoWalk(b, blockSize, root.lba, root.size, '', files, 0, new Set(), joliet, walkState);
     findings.push(finding('L1', 'iso', `ISO9660 · ${volId || '(无卷标)'} · ${blockSize} 字节/块 · ${volBlocks} 块 · ${files.length} 个文件`, {
       confidence: 0.95, offset: 16 * 2048,
       declared: `卷空间 ${volBlocks} 块（${volBlocks * blockSize} 字节）`,
@@ -474,6 +475,13 @@
       detail: `System ID: ${sysId || '(空)'}；主卷描述符 @ 0x${hex(pvd)}${svd >= 0 ? '，补充卷 @ 0x' + hex(svd) : ''}`,
       recipe: '7z l image.iso / isoinfo -l -i image.iso'
     }));
+    if (walkState.truncated || walkState.broken) {
+      findings.push(finding('L1', 'iso_limit', '目录树没有完整列完', {
+        confidence: 0.6,
+        actual: `${walkState.truncated ? '达到深度/数量上限' : ''}${walkState.broken ? '目录记录越界' : ''}`,
+        detail: `已列出 ${files.length} 个文件；剩余部分可用 7z / isoinfo 继续看。`
+      }));
+    }
     if (files.length) {
       findings.push(finding('L2', 'iso_files', `ISO 文件列表（${files.length} 个）`, {
         confidence: 0.7,
@@ -530,16 +538,18 @@
     const findings = [], artifacts = [];
     if (b.length < 12) return { findings: [finding('L0', 'format', 'MP4 太短')], artifacts, image: null };
     const boxes = [], meta = [], flags = [];
-    let mdatBytes = 0, metaOff = -1, tailAt = -1;
+    let mdatBytes = 0, tailAt = -1, truncated = false;
     const addFlag = (f, where) => {
       if (!f || flags.some(x => x.flag === f)) return;
       flags.push({ flag: f, where });
     };
     const addFlags = (text, where) => { for (const f of MDZ.flagFindAll(text)) addFlag(f, where); };
     function walk(start, end, depth, path) {
+      if (depth > 16 || boxes.length >= 5000) { truncated = true; return; }
       let p = start;
       let lastEnd = start;
       while (p + 8 <= end) {
+        if (boxes.length >= 5000) { truncated = true; break; }
         let size = be32(b, p);
         const type = ascii(b.subarray(p + 4, p + 8), 4);
         let header = 8;
@@ -565,10 +575,19 @@
             actual: ascii(b.subarray(body, Math.min(body + 24, bodyEnd)), Math.min(24, bodyEnd - body)).replace(/\x00/g, ' ')
           }));
         } else if (type === 'mvhd' && body + 20 <= bodyEnd) {
-          const ts = be32(b, body + 12), dur = be32(b, body + 16);
-          findings.push(finding('L3', 'mp4_mvhd', `时长 ${ts ? (dur / ts).toFixed(2) : '?'} 秒`, {
-            confidence: 0.6, offset: p, actual: `timescale ${ts} · duration ${dur}`
-          }));
+          const ver = b[body];
+          let ts = 0, dur = 0;
+          if (ver === 1 && body + 32 <= bodyEnd) {
+            ts = be32(b, body + 20);
+            dur = be32(b, body + 24) * 4294967296 + be32(b, body + 28);
+          } else if (ver === 0) {
+            ts = be32(b, body + 12); dur = be32(b, body + 16);
+          }
+          if (ts) {
+            findings.push(finding('L3', 'mp4_mvhd', `时长 ${(dur / ts).toFixed(2)} 秒`, {
+              confidence: 0.6, offset: p, actual: `version ${ver} · timescale ${ts} · duration ${dur}`
+            }));
+          }
         } else if (type === 'mdat') {
           mdatBytes += bodyEnd - body;
         } else if (type === 'free' || type === 'skip') {
@@ -586,8 +605,6 @@
             artifacts.push(artifact(`mp4-${type}.bin`, b.subarray(body, bodyEnd), `MP4 ${type} box 数据`));
             addFlags(ascii(b.subarray(body, Math.min(bodyEnd, body + 65536)), Math.min(65536, bodyEnd - body)), 'free/skip');
           }
-        } else if (type === 'meta' && metaOff < 0) {
-          metaOff = p;
         } else if (type === 'ilst') {
           let ip = body;
           while (ip + 8 <= bodyEnd) {
@@ -624,6 +641,11 @@
       if (depth === 0) tailAt = lastEnd;
     }
     walk(0, b.length, 0, []);
+    if (truncated) {
+      findings.push(finding('L1', 'mp4_limit', 'box 树超过扫描上限（5000 个 / 16 层），后面的 box 未列出', {
+        confidence: 0.7, actual: `已列出 ${boxes.length} 个`
+      }));
+    }
     if (mdatBytes) {
       findings.push(finding('L2', 'mp4_mdat', `mdat 媒体数据 ${mdatBytes} 字节（未解码）`, {
         confidence: 0.4, actual: '音视频本体；本工具只查元数据与填充区',

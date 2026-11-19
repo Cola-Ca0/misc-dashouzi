@@ -1315,6 +1315,21 @@ console.log('\n== TIFF 像素 ==');
   const rp = M.auditTIFF(pb, 'packbits.tif');
   check('TIFF PackBits 像素解码', !!rp.image && rp.image.channels.R[85] === 255,
     rp.image ? JSON.stringify({ r: rp.image.channels.R[85], meta: rp.parsed.pixels }) : (rp.findings.map(f => f.title).join(' | ')));
+  const defl = fs.readFileSync(path.join(__dirname, 'fixtures', 'deflate.tif'));
+  const rd = M.auditTIFF(defl, 'deflate.tif');
+  check('TIFF Deflate 像素解码', !!rd.image && rd.parsed.pixels.compression === 8 && rd.image.channels.R[85] === 255,
+    rd.image ? JSON.stringify(rd.parsed.pixels) : rd.findings.map(f => f.title).join(' | '));
+  const g16 = fs.readFileSync(path.join(__dirname, 'fixtures', 'gray16.tif'));
+  const rg = M.auditTIFF(g16, 'gray16.tif');
+  check('TIFF 16 位灰度取高字节', !!rg.image && rg.parsed.pixels.bits === 16 && rg.image.channels.R[85] === 0x12,
+    rg.image ? String(rg.image.channels.R[85]) : 'no image');
+  const pal = fs.readFileSync(path.join(__dirname, 'fixtures', 'palette.tif'));
+  check('TIFF 8 位调色板', M.auditTIFF(pal, 'palette.tif').image.channels.R[85] === 255);
+  const pal4 = fs.readFileSync(path.join(__dirname, 'fixtures', 'pal4.tif'));
+  check('TIFF 4 位调色板', M.auditTIFF(pal4, 'pal4.tif').image.channels.R[85] === 255);
+  const pred = fs.readFileSync(path.join(__dirname, 'fixtures', 'pred2.tif'));
+  const rpred = M.auditTIFF(pred, 'pred2.tif');
+  check('TIFF predictor 2', !!rpred.image && rpred.parsed.pixels.predictor === 2 && rpred.image.channels.R[85] === 255);
   const an = M.analyze(lzw, 'lzw.tif', {});
   check('TIFF 进入图像扫描链', findingText(an).indexOf('flag{tiff_tail}') >= 0, findingText(an).slice(0, 160));
 }

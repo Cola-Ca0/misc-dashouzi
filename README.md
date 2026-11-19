@@ -84,7 +84,7 @@ The optional `companion.py` bridge is **not required**. What used to need extern
 - **Read-only**: input files are never modified; repairs produce a new copy.
 - **No upload**: everything happens in the browser.
 - **Limits**: 32 MB upload, 50 files per batch, recursion depth 3 (64 files), pixel cap 6M (configurable to 20M), 4M audio samples scanned, 100k packets / 8 MB per stream in PCAP. Every limit that truncates something says so in the findings — no silent cuts.
-- **Not supported**: JPEG DCT steganography (steghide/outguess/F5), password cracking, WebP/TIFF pixel decoding, GIF frame compositing (per-frame decode is supported), skewed/perspective barcodes.
+- **Not supported**: JPEG DCT steganography (steghide/outguess/F5), password cracking, WebP pixel decoding (TIFF baseline is supported), GIF frame compositing (per-frame decode is supported), skewed/perspective barcodes.
 
 ## Optional companion (steghide / bkcrack)
 
@@ -103,7 +103,7 @@ Security boundaries: loopback only, `X-MDZ-Token` on every request, CORS limited
 ```bash
 python build.py            # inline src/ into the single HTML, regenerate fixtures
 python build.py --no-bg    # release build without the wallpaper image
-node tests/run.js          # 419 checks
+node tests/run.js          # 429 checks
 node tests/cdp-smoke.js    # Edge CDP smoke (needs Edge)
 ```
 
