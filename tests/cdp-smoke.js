@@ -465,6 +465,32 @@ function zeroBmp() {
       || extra.about.h1.indexOf((fs.readFileSync(path.join(ROOT, 'src', '00-util.js'), 'utf8').match(/const VERSION = '([^']+)'/) || [])[1] || '?') < 0) {
       throw new Error('版本说明页异常：' + JSON.stringify(extra.about));
     }
+    // 编码工具页：切页 + Base64 解码 + 自定义 Base 表 + 爆破
+    await ev(`document.querySelector('#viewtabs [data-view="codec"]').click()`);
+    extra.codec = await ev(`(() => {
+      const pane = document.querySelector('#pane-codec');
+      const sel = document.querySelector('#codec-op');
+      const inp = document.querySelector('#codec-in');
+      const out = document.querySelector('#codec-out');
+      const alpha = document.querySelector('#codec-alpha');
+      const run = () => document.querySelector('#codec-run').click();
+      sel.value = 'base64-decode'; inp.value = 'ZmxhZ3tjb2RlY19jZHB9'; run();
+      const b64 = out.value;
+      const table = 'QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm0123456789+/';
+      alpha.value = table;
+      sel.value = 'custom-encode'; inp.value = 'flag{custom_cdp}'; run();
+      const enc = out.value;
+      sel.value = 'custom-decode'; inp.value = enc; run();
+      const custom = out.value;
+      inp.value = 'ZmxhZ3ticnV0ZV9jZHB9';
+      document.querySelector('#codec-brute').click();
+      const hits = document.querySelectorAll('.codec-hit').length;
+      return { shown: getComputedStyle(pane).display !== 'none', b64, custom, hits, alphaShown: alpha.style.display !== 'none' };
+    })()`);
+    if (!extra.codec.shown || extra.codec.b64 !== 'flag{codec_cdp}' || extra.codec.custom !== 'flag{custom_cdp}'
+      || extra.codec.hits < 1 || !extra.codec.alphaShown) {
+      throw new Error('编码工具页异常：' + JSON.stringify(extra.codec));
+    }
     await ev(`document.querySelector('#viewtabs [data-view="analysis"]').click()`);
 
     // 可选：对真实赛题跑一遍「候选尺寸 → 修复 → 重新分析」

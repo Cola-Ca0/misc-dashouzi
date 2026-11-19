@@ -2521,15 +2521,16 @@
       $$('#viewtabs .vtab').forEach(x => x.classList.toggle('on', x === b));
       $('#content').style.display = view === 'analysis' ? '' : 'none';
       $('#pane-nodes').style.display = view === 'nodes' ? 'flex' : 'none';
+      $('#pane-codec').style.display = view === 'codec' ? 'flex' : 'none';
       $('#pane-about').style.display = view === 'about' ? 'block' : 'none';
-      $('#pv').style.display = view === 'about' ? 'none' : '';
+      $('#pv').style.display = (view === 'about' || view === 'codec') ? 'none' : '';
       $('#filters').style.display = (view === 'analysis' && state.items.some(x => x.result)) ? '' : 'none';
       if (view === 'nodes') {
         nodeEnsureGraph();
         nodeEval();
       } else if (view === 'about') {
         renderAbout();
-      } else if (state.result) {
+      } else if (view === 'analysis' && state.result) {
         pvShowResult(state.result);
       }
     }));
@@ -2545,6 +2546,76 @@
         if (r && $('#pane-nodes') && $('#pane-nodes').style.display !== 'none') nodeEval();
         else if (r) pvShowResult(r);
       }
+    });
+  }
+
+  // ---------- 编码工具 ----------
+  function bindCodec() {
+    const pane = $('#pane-codec');
+    if (!pane) return;
+    const sel = $('#codec-op');
+    const alpha = $('#codec-alpha');
+    const inp = $('#codec-in');
+    const out = $('#codec-out');
+    const note = $('#codec-note');
+    const results = $('#codec-results');
+    sel.innerHTML = (M.CODEC_OPS || []).map(g =>
+      `<optgroup label="${esc(g.group)}">${g.items.map(it => `<option value="${it.id}">${esc(it.label)}</option>`).join('')}</optgroup>`
+    ).join('');
+    const isCustom = () => /^custom-/.test(sel.value);
+    const syncAlpha = () => { alpha.style.display = isCustom() ? '' : 'none'; };
+    sel.addEventListener('change', syncAlpha);
+    syncAlpha();
+    let last = null;
+    const setNote = (t, bad) => { note.textContent = t; note.style.color = bad ? 'var(--danger)' : ''; };
+    const run = () => {
+      syncAlpha();
+      const r = M.codecApply(sel.value, inp.value, { alphabet: alpha.value.trim() });
+      if (!r.ok) { last = null; out.value = ''; setNote('失败：' + (r.error || '无法解码'), true); return; }
+      last = r;
+      out.value = r.text;
+      setNote(r.binary ? `二进制结果 ${r.bytes.length} 字节，按 hex 显示，可以下载原字节` : `完成 · ${r.text.length} 字符`);
+    };
+    $('#codec-run').addEventListener('click', run);
+    $('#codec-swap').addEventListener('click', () => {
+      if (!out.value) return;
+      inp.value = out.value; out.value = ''; last = null;
+      setNote('已把结果放回输入');
+    });
+    $('#codec-copy').addEventListener('click', () => {
+      if (!out.value) return;
+      const done = () => setNote('已复制');
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).then(done, () => setNote('复制失败：浏览器不给剪贴板权限', true));
+      else setNote('复制失败：浏览器不支持剪贴板 API', true);
+    });
+    $('#codec-dl').addEventListener('click', () => {
+      if (!last || !last.ok) { setNote('还没有结果可下载', true); return; }
+      if (last.binary && last.bytes) dl('codec-out.bin', last.bytes);
+      else dl('codec-out.txt', new TextEncoder().encode(last.text), 'text/plain');
+    });
+    $('#codec-load').addEventListener('click', () => {
+      const it = state.items.find(x => x.bytes) || (state.bytes ? { bytes: state.bytes } : null);
+      if (!it) { setNote('当前没有文件', true); return; }
+      const t = M.utf8(it.bytes);
+      if (t != null && M.printableRatio(it.bytes.subarray(0, 4096)) > 0.85) inp.value = t;
+      else inp.value = M.hexEncode(it.bytes.subarray(0, 4096)) + (it.bytes.length > 4096 ? ' …' : '');
+      setNote(`已读入当前文件（${it.bytes.length} 字节）`);
+    });
+    $('#codec-brute').addEventListener('click', () => {
+      const list = M.bruteDecode(inp.value);
+      results._list = list;
+      results.innerHTML = list.length ? list.map((r, i) =>
+        `<div class="codec-hit" data-hit="${i}"><span class="kind">${esc(r.path ? r.path.join(' → ') : r.kind)}</span><span class="score">${r.score.toFixed(1)}</span><pre>${esc(r.text.slice(0, 400))}</pre></div>`
+      ).join('') : '<div class="cp-note">没有解出可读结果。可以试试自定义 Base 表，或者只粘一段可疑内容再爆破。</div>';
+      setNote(`爆破 ${list.length} 条候选（按可读性 + flag 命中打分），点一条载入结果`);
+    });
+    results.addEventListener('click', e => {
+      const hit = e.target.closest && e.target.closest('.codec-hit');
+      if (!hit || !results._list) return;
+      const r = results._list[parseInt(hit.dataset.hit, 10)];
+      if (!r) return;
+      out.value = r.text; last = { ok: true, text: r.text };
+      setNote('已载入候选：' + (r.path ? r.path.join(' → ') : r.kind));
     });
   }
 
@@ -2600,6 +2671,7 @@
     document.addEventListener('drop', e => { e.preventDefault(); });
     bindFilters();
     bindViews();
+    bindCodec();
     bindNodeEditor();
     $('#analyze').addEventListener('click', () => {
       if (!state.busy) runCurrentAnalysis();

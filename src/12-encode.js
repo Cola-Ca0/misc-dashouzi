@@ -227,9 +227,470 @@
     return out;
   }
 
+  // ---------- 编码方向 + 自定义 Base 表 ----------
+  const B58_A = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const B62_A = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+
+  function utf8Bytes(s) {
+    if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(String(s));
+    return bytesOf(String(s));
+  }
+
+  function bytesToText(bytes) {
+    if (!bytes || !bytes.length) return null;
+    const t = utf8(bytes);
+    if (t == null) return null;
+    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(t)) return null;
+    return t;
+  }
+
+  function hexEncode(input) {
+    const b = toU8(input);
+    let out = '';
+    for (let i = 0; i < b.length; i++) out += (b[i] >> 4).toString(16) + (b[i] & 15).toString(16);
+    return out;
+  }
+
+  function hexDecode(s) {
+    let t = String(s).replace(/0x/gi, '').replace(/[^0-9a-fA-F]/g, '');
+    if (t.length & 1) t = t.slice(0, -1);
+    const out = new Uint8Array(t.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(t.substr(i * 2, 2), 16);
+    return out;
+  }
+
+  function b32encode(input) {
+    const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const b = toU8(input);
+    let bits = 0, val = 0, out = '';
+    for (const byte of b) {
+      val = ((val << 8) | byte) >>> 0;
+      bits += 8;
+      while (bits >= 5) { bits -= 5; out += A[(val >>> bits) & 31]; }
+      val &= (1 << bits) - 1;
+    }
+    if (bits) out += A[(val << (5 - bits)) & 31];
+    while (out.length % 8) out += '=';
+    return out;
+  }
+
+  function b64urlEncode(input) {
+    return MDZ.b64encode(toU8(input)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64urlDecode(s) {
+    let t = String(s).trim().replace(/-/g, '+').replace(/_/g, '/');
+    while (t.length % 4) t += '=';
+    return MDZ.b64decode(t);
+  }
+
+  function a85encode(input) {
+    const b = toU8(input);
+    let out = '';
+    for (let i = 0; i < b.length; i += 4) {
+      const n = Math.min(4, b.length - i);
+      let v = 0;
+      for (let j = 0; j < 4; j++) v = v * 256 + (j < n ? b[i + j] : 0);
+      let chunk = '';
+      for (let j = 0; j < 5; j++) { chunk = String.fromCharCode(33 + (v % 85)) + chunk; v = Math.floor(v / 85); }
+      out += chunk.slice(0, n + 1);
+    }
+    return out;
+  }
+
+  const B91_A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&()*+,./:;<=>?@[]^_`{|}~"';
+  function b91encode(input) {
+    const b = toU8(input);
+    let out = '', v = 0, bits = 0;
+    for (const byte of b) {
+      v |= byte << bits;
+      bits += 8;
+      if (bits > 13) {
+        let q = v & 8191;
+        if (q > 88) { v >>>= 13; bits -= 13; }
+        else { q = v & 16383; v >>>= 14; bits -= 14; }
+        out += B91_A[q % 91] + B91_A[Math.floor(q / 91)];
+      }
+    }
+    if (bits) {
+      out += B91_A[v % 91];
+      if (bits > 7 || v > 90) out += B91_A[Math.floor(v / 91)];
+    }
+    return out;
+  }
+
+  // 任意字母表：2/4/8/16/32/64 位按位流处理（换表 Base64 的用法），其余按大整数
+  function baseBitsEncode(input, A, bits) {
+    const b = toU8(input);
+    const mask = (1 << bits) - 1;
+    let out = '', val = 0, n = 0;
+    for (const byte of b) {
+      val = ((val << 8) | byte) >>> 0;
+      n += 8;
+      while (n >= bits) { n -= bits; out += A[(val >>> n) & mask]; }
+      val &= (1 << n) - 1;
+    }
+    if (n) out += A[(val << (bits - n)) & mask];
+    return out;
+  }
+  function baseBitsDecode(s, A, bits) {
+    const t = String(s).replace(/[\s=]+/g, '');
+    let val = 0, n = 0;
+    const out = [];
+    for (const ch of t) {
+      const v = A.indexOf(ch);
+      if (v < 0) return null;
+      val = ((val << bits) | v) & 0xFFFF;
+      n += bits;
+      if (n >= 8) { n -= 8; out.push((val >>> n) & 255); }
+    }
+    return Uint8Array.from(out);
+  }
+  function baseBigEncode(input, A) {
+    const b = toU8(input);
+    let zeros = 0;
+    while (zeros < b.length && b[zeros] === 0) zeros++;
+    const digits = [];
+    for (let i = zeros; i < b.length; i++) {
+      let carry = b[i];
+      for (let j = 0; j < digits.length; j++) {
+        const v = digits[j] * 256 + carry;
+        digits[j] = v % A.length;
+        carry = Math.floor(v / A.length);
+      }
+      while (carry) { digits.push(carry % A.length); carry = Math.floor(carry / A.length); }
+    }
+    let out = A[0].repeat(zeros);
+    for (let i = digits.length - 1; i >= 0; i--) out += A[digits[i]];
+    return out;
+  }
+  function baseBigDecode(s, A) {
+    const t = String(s).replace(/\s+/g, '');
+    let zeros = 0;
+    while (zeros < t.length && t[zeros] === A[0]) zeros++;
+    const bytes = [];
+    for (let i = zeros; i < t.length; i++) {
+      let carry = A.indexOf(t[i]);
+      if (carry < 0) return null;
+      for (let j = 0; j < bytes.length; j++) {
+        const v = bytes[j] * A.length + carry;
+        bytes[j] = v & 255;
+        carry = v >> 8;
+      }
+      while (carry) { bytes.push(carry & 255); carry >>= 8; }
+    }
+    const out = new Uint8Array(zeros + bytes.length);
+    for (let i = 0; i < bytes.length; i++) out[zeros + i] = bytes[bytes.length - 1 - i];
+    return out;
+  }
+  function customTable(alphabet) {
+    const A = String(alphabet || '');
+    if (A.length < 2 || A.length > 94) return { error: '字母表需要 2-94 个字符' };
+    if (new Set(A).size !== A.length) return { error: '字母表里有重复字符' };
+    return { A };
+  }
+  function baseCustomEncode(input, alphabet) {
+    const c = customTable(alphabet);
+    if (c.error) return { error: c.error };
+    const bits = Math.log2(c.A.length);
+    return { text: Number.isInteger(bits) && bits <= 8 ? baseBitsEncode(input, c.A, bits) : baseBigEncode(input, c.A) };
+  }
+  function baseCustomDecode(s, alphabet) {
+    const c = customTable(alphabet);
+    if (c.error) return { error: c.error };
+    const bits = Math.log2(c.A.length);
+    const bytes = Number.isInteger(bits) && bits <= 8 ? baseBitsDecode(s, c.A, bits) : baseBigDecode(s, c.A);
+    return bytes ? { bytes } : { error: '输入里有字母表之外的字符' };
+  }
+  function b58encode(input) { return baseBigEncode(input, B58_A); }
+  function b58decode(s) { return baseBigDecode(s, B58_A); }
+  function b62encode(input) { return baseBigEncode(input, B62_A); }
+  function b62decode(s) { return baseBigDecode(s, B62_A); }
+
+  function qpEncode(s) {
+    const b = utf8Bytes(s);
+    let out = '';
+    for (let i = 0; i < b.length; i++) {
+      const c = b[i];
+      if ((c >= 33 && c <= 126 && c !== 61) || c === 32 || c === 9) out += String.fromCharCode(c);
+      else out += '=' + (c < 16 ? '0' : '') + c.toString(16).toUpperCase();
+    }
+    return out;
+  }
+  function qpDecode(s) {
+    const src = String(s).replace(/=\r?\n/g, '');
+    const bytes = [];
+    for (let i = 0; i < src.length; i++) {
+      if (src[i] === '=' && /^[0-9A-Fa-f]{2}$/.test(src.substr(i + 1, 2))) {
+        bytes.push(parseInt(src.substr(i + 1, 2), 16)); i += 2;
+      } else {
+        bytes.push(src.charCodeAt(i) & 255);
+      }
+    }
+    return Uint8Array.from(bytes);
+  }
+
+  function uuencode(input) {
+    const b = toU8(input);
+    const lines = ['begin 644 -'];
+    for (let i = 0; i < b.length; i += 45) {
+      const n = Math.min(45, b.length - i);
+      let line = String.fromCharCode(32 + n);
+      for (let j = 0; j < n; j += 3) {
+        const a = b[i + j];
+        const c2 = j + 1 < n ? b[i + j + 1] : 0;
+        const c3 = j + 2 < n ? b[i + j + 2] : 0;
+        line += String.fromCharCode(32 + (a >> 2), 32 + (((a << 4) | (c2 >> 4)) & 63), 32 + (((c2 << 2) | (c3 >> 6)) & 63), 32 + (c3 & 63));
+      }
+      lines.push(line);
+    }
+    lines.push('`', 'end', '');
+    return lines.join('\n');
+  }
+
+  function urlEncode(s) { return encodeURIComponent(String(s)); }
+  function htmlEncode(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function unicodeEncode(s) {
+    return Array.from(String(s)).map(c => {
+      const cp = c.codePointAt(0);
+      return cp > 0xFFFF ? '\\u{' + cp.toString(16) + '}' : '\\u' + cp.toString(16).padStart(4, '0');
+    }).join('');
+  }
+  function unicodeDecode(s) {
+    return String(s).replace(/\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})|\\x([0-9a-fA-F]{2})|&#x([0-9a-fA-F]+);|&#(\d+);/g, (m, a, b, c, d, e) => {
+      const cp = a ? parseInt(a, 16) : b ? parseInt(b, 16) : c ? parseInt(c, 16) : d ? parseInt(d, 16) : parseInt(e, 10);
+      try { return String.fromCodePoint(cp); } catch (_) { return m; }
+    });
+  }
+
+  const MORSE_A = {
+    A: '.-', B: '-...', C: '-.-.', D: '-..', E: '.', F: '..-.', G: '--.', H: '....', I: '..', J: '.---',
+    K: '-.-', L: '.-..', M: '--', N: '-.', O: '---', P: '.--.', Q: '--.-', R: '.-.', S: '...', T: '-',
+    U: '..-', V: '...-', W: '.--', X: '-..-', Y: '-.--', Z: '--..',
+    0: '-----', 1: '.----', 2: '..---', 3: '...--', 4: '....-', 5: '.....', 6: '-....', 7: '--...', 8: '---..', 9: '----.',
+    '.': '.-.-.-', ',': '--..--', '?': '..--..', "'": '.----.', '!': '-.-.--', '/': '-..-.', '(': '-.--.', ')': '-.--.-',
+    '&': '.-...', ':': '---...', ';': '-.-.-.', '=': '-...-', '+': '.-.-.', '-': '-....-', '_': '..--.-', '"': '.-..-.', '$': '...-..-', '@': '.--.-.'
+  };
+  function morseEncode(s) {
+    return String(s).toUpperCase().split('').map(c => c === ' ' ? '/' : (MORSE_A[c] || '')).filter(Boolean).join(' ');
+  }
+  function morseDecode(s) {
+    const rev = {};
+    for (const k of Object.keys(MORSE_A)) rev[MORSE_A[k]] = k;
+    return String(s).trim().split(/\s+/).map(tok => {
+      if (tok === '/' || tok === '|') return ' ';
+      return rev[tok] || '';
+    }).join('');
+  }
+
+  function baconEncode(s) {
+    return String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').map(c =>
+      (c.charCodeAt(0) - 65).toString(2).padStart(5, '0').replace(/0/g, 'A').replace(/1/g, 'B')
+    ).join(' ');
+  }
+  function baconDecode(s) {
+    const t = String(s).toUpperCase().replace(/[^AB]/g, '');
+    let out = '';
+    for (let i = 0; i + 5 <= t.length; i += 5) {
+      const v = parseInt(t.slice(i, i + 5).replace(/A/g, '0').replace(/B/g, '1'), 2);
+      if (v < 26) out += String.fromCharCode(65 + v);
+    }
+    return out;
+  }
+
+  function a1z26Encode(s) {
+    return String(s).toUpperCase().replace(/[^A-Z]/g, '').split('').map(c => c.charCodeAt(0) - 64).join('-');
+  }
+  function a1z26Decode(s) {
+    return String(s).trim().split(/[^0-9]+/).filter(Boolean).map(n => {
+      const v = parseInt(n, 10);
+      return v >= 1 && v <= 26 ? String.fromCharCode(64 + v) : '';
+    }).join('');
+  }
+
+  function binEncode(input) { return Array.from(toU8(input), x => x.toString(2).padStart(8, '0')).join(' '); }
+  function binDecode(s) {
+    const t = String(s).replace(/[^01]/g, '');
+    const out = [];
+    for (let i = 0; i + 8 <= t.length; i += 8) out.push(parseInt(t.slice(i, i + 8), 2));
+    return Uint8Array.from(out);
+  }
+  function octEncode(input) { return Array.from(toU8(input), x => x.toString(8).padStart(3, '0')).join(' '); }
+  function octDecode(s) {
+    const parts = String(s).trim().split(/[^0-7]+/).filter(Boolean);
+    let nums;
+    if (parts.length && parts.every(x => x.length <= 3)) {
+      nums = parts.map(x => parseInt(x, 8));
+    } else {
+      const t = String(s).replace(/[^0-7]/g, '');
+      nums = [];
+      for (let i = 0; i + 3 <= t.length; i += 3) nums.push(parseInt(t.slice(i, i + 3), 8));
+    }
+    return Uint8Array.from(nums.filter(v => v <= 255));
+  }
+  function decEncode(input) { return Array.from(toU8(input)).join(' '); }
+  function decDecode(s) {
+    return Uint8Array.from(String(s).trim().split(/[^0-9]+/).filter(Boolean).map(x => parseInt(x, 10)).filter(v => v >= 0 && v <= 255));
+  }
+
+  // ---------- 统一入口 ----------
+  const CODEC_OPS = [
+    { group: 'Base 系列', items: [
+      { id: 'base64-encode', label: 'Base64 编码' }, { id: 'base64-decode', label: 'Base64 解码' },
+      { id: 'base64url-encode', label: 'Base64URL 编码' }, { id: 'base64url-decode', label: 'Base64URL 解码' },
+      { id: 'base32-encode', label: 'Base32 编码' }, { id: 'base32-decode', label: 'Base32 解码' },
+      { id: 'base58-encode', label: 'Base58 编码' }, { id: 'base58-decode', label: 'Base58 解码' },
+      { id: 'base62-encode', label: 'Base62 编码' }, { id: 'base62-decode', label: 'Base62 解码' },
+      { id: 'base85-encode', label: 'Base85 / Ascii85 编码' }, { id: 'base85-decode', label: 'Base85 / Ascii85 解码' },
+      { id: 'base91-encode', label: 'Base91 编码' }, { id: 'base91-decode', label: 'Base91 解码' },
+      { id: 'custom-encode', label: '自定义 Base 编码（填字母表）' }, { id: 'custom-decode', label: '自定义 Base 解码（填字母表）' }
+    ] },
+    { group: '字节 / 文本', items: [
+      { id: 'hex-encode', label: 'Hex 编码' }, { id: 'hex-decode', label: 'Hex 解码' },
+      { id: 'bin-encode', label: '二进制 (01) 编码' }, { id: 'bin-decode', label: '二进制 (01) 解码' },
+      { id: 'oct-encode', label: '八进制编码' }, { id: 'oct-decode', label: '八进制解码' },
+      { id: 'dec-encode', label: '十进制字节编码' }, { id: 'dec-decode', label: '十进制字节解码' },
+      { id: 'url-encode', label: 'URL 编码' }, { id: 'url-decode', label: 'URL 解码' },
+      { id: 'html-encode', label: 'HTML 实体编码' }, { id: 'html-decode', label: 'HTML 实体解码' },
+      { id: 'qp-encode', label: 'Quoted-Printable 编码' }, { id: 'qp-decode', label: 'Quoted-Printable 解码' },
+      { id: 'unicode-encode', label: 'Unicode 转义编码' }, { id: 'unicode-decode', label: 'Unicode 转义解码' },
+      { id: 'uuencode-encode', label: 'UUencode 编码' }, { id: 'uuencode-decode', label: 'UUencode 解码' }
+    ] },
+    { group: '经典替换', items: [
+      { id: 'rot13', label: 'ROT13' }, { id: 'rot47', label: 'ROT47' }, { id: 'atbash', label: 'Atbash' },
+      { id: 'morse-encode', label: '摩斯电码编码' }, { id: 'morse-decode', label: '摩斯电码解码' },
+      { id: 'bacon-encode', label: '培根密码编码' }, { id: 'bacon-decode', label: '培根密码解码' },
+      { id: 'a1z26-encode', label: 'A1Z26 编码' }, { id: 'a1z26-decode', label: 'A1Z26 解码' }
+    ] }
+  ];
+
+  function codecApply(op, text, opts) {
+    const s = String(text == null ? '' : text);
+    const o = opts || {};
+    const enc = utf8Bytes(s);
+    const okText = t => t == null ? { ok: false, error: '没有解出内容' } : { ok: true, text: String(t) };
+    const okBytes = bytes => {
+      if (!bytes || !bytes.length) return { ok: false, error: '没有解出内容' };
+      const t = bytesToText(bytes);
+      if (t != null) return { ok: true, text: t };
+      return { ok: true, text: hexEncode(bytes), binary: true, bytes };
+    };
+    try {
+      switch (op) {
+        case 'base64-encode': return okText(MDZ.b64encode(enc));
+        case 'base64-decode': return okBytes(MDZ.b64decode(s));
+        case 'base64url-encode': return okText(b64urlEncode(enc));
+        case 'base64url-decode': return okBytes(b64urlDecode(s));
+        case 'base32-encode': return okText(b32encode(enc));
+        case 'base32-decode': { const b = b32decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base32' }; }
+        case 'base58-encode': return okText(b58encode(enc));
+        case 'base58-decode': { const b = b58decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base58' }; }
+        case 'base62-encode': return okText(b62encode(enc));
+        case 'base62-decode': { const b = b62decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base62' }; }
+        case 'base85-encode': return okText(a85encode(enc));
+        case 'base85-decode': { const b = a85decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Ascii85' }; }
+        case 'base91-encode': return okText(b91encode(enc));
+        case 'base91-decode': { const b = b91decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base91' }; }
+        case 'custom-encode': { const r = baseCustomEncode(enc, o.alphabet); return r.error ? { ok: false, error: r.error } : okText(r.text); }
+        case 'custom-decode': { const r = baseCustomDecode(s, o.alphabet); return r.error ? { ok: false, error: r.error } : okBytes(r.bytes); }
+        case 'hex-encode': return okText(hexEncode(enc));
+        case 'hex-decode': return okBytes(hexDecode(s));
+        case 'bin-encode': return okText(binEncode(enc));
+        case 'bin-decode': return okBytes(binDecode(s));
+        case 'oct-encode': return okText(octEncode(enc));
+        case 'oct-decode': return okBytes(octDecode(s));
+        case 'dec-encode': return okText(decEncode(enc));
+        case 'dec-decode': return okBytes(decDecode(s));
+        case 'url-encode': return okText(urlEncode(s));
+        case 'url-decode': return okText(urlDecode(s));
+        case 'html-encode': return okText(htmlEncode(s));
+        case 'html-decode': return okText(htmlDecode(s));
+        case 'qp-encode': return okText(qpEncode(s));
+        case 'qp-decode': return okBytes(qpDecode(s));
+        case 'unicode-encode': return okText(unicodeEncode(s));
+        case 'unicode-decode': return okText(unicodeDecode(s));
+        case 'uuencode-encode': return okText(uuencode(enc));
+        case 'uuencode-decode': { const b = uudecode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 UUencode' }; }
+        case 'rot13': return okText(rotN(s, 13));
+        case 'rot47': return okText(rot47(s));
+        case 'atbash': return okText(atbash(s));
+        case 'morse-encode': return okText(morseEncode(s));
+        case 'morse-decode': return okText(morseDecode(s));
+        case 'bacon-encode': return okText(baconEncode(s));
+        case 'bacon-decode': return okText(baconDecode(s));
+        case 'a1z26-encode': return okText(a1z26Encode(s));
+        case 'a1z26-decode': return okText(a1z26Decode(s));
+        default: return { ok: false, error: '未知操作：' + op };
+      }
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e) };
+    }
+  }
+
+  const DECODE_OPS = [
+    'base64-decode', 'base64url-decode', 'base32-decode', 'base58-decode', 'base62-decode',
+    'base85-decode', 'base91-decode', 'hex-decode', 'bin-decode', 'oct-decode', 'dec-decode',
+    'url-decode', 'html-decode', 'qp-decode', 'unicode-decode', 'uuencode-decode',
+    'morse-decode', 'bacon-decode', 'a1z26-decode'
+  ];
+
+  function textReadableRatio(t) {
+    const chars = Array.from(String(t));
+    if (!chars.length) return 0;
+    let ok = 0;
+    for (const ch of chars) {
+      const c = ch.codePointAt(0);
+      if ((c >= 32 && c < 127) || c === 9 || c === 10 || c === 13 || (c >= 0x4e00 && c <= 0x9fff)) ok++;
+    }
+    return ok / chars.length;
+  }
+
+  function scoreCandidate(t, orig) {
+    if (!t || t === orig) return -1;
+    let score = textReadableRatio(t) * 40;
+    if (MDZ.flagMatch && MDZ.flagMatch(t)) score += 60;
+    else if (/[A-Za-z0-9_]{2,}\{[^}\r\n]{4,}\}/.test(t)) score += 24;
+    if (/\b(?:flag|ctf|key|secret|passw(?:or)?d)\b/i.test(t)) score += 8;
+    if (t.length >= 16) score += 4;
+    return score;
+  }
+
+  // 编码爆破：常见解码器 + ROT/Atbash + 自动链全跑一遍，按可读性和 flag 命中排序
+  function bruteDecode(text, opts) {
+    const s = String(text == null ? '' : text);
+    const o = opts || {};
+    const seen = new Map();
+    const add = (kind, t, path) => {
+      if (!t || typeof t !== 'string') return;
+      const score = scoreCandidate(t, s);
+      if (score < 0) return;
+      const prev = seen.get(t);
+      if (prev) { if (prev.score < score) { prev.score = score; prev.kind = kind; } return; }
+      seen.set(t, { kind, path: path || [kind], text: t, score });
+    };
+    for (const op of DECODE_OPS) {
+      const r = codecApply(op, s, o);
+      if (r.ok) add(op.replace(/-decode$/, ''), r.text);
+    }
+    for (let n = 1; n <= 25; n++) add('rot' + n, rotN(s, n));
+    add('rot47', rot47(s));
+    add('atbash', atbash(s));
+    for (const r of decodeChain(s, 3)) add(r.kind, r.text, r.path);
+    const out = Array.from(seen.values()).filter(x => x.score > 0);
+    out.sort((a, b) => b.score - a.score || a.text.length - b.text.length);
+    return out.slice(0, o.limit || 30);
+  }
+
   Object.assign(MDZ, {
     b32decode, a85decode, b91decode, uudecode,
     rotN, rot47, atbash, urlDecode, htmlDecode,
-    decodeOnce, decodeChain, scanText
+    decodeOnce, decodeChain, scanText,
+    b32encode, b64urlEncode, b64urlDecode, a85encode, b91encode, b58encode, b58decode,
+    b62encode, b62decode, hexEncode, hexDecode, qpEncode, qpDecode, uuencode,
+    urlEncode, htmlEncode, unicodeEncode, unicodeDecode, morseEncode, morseDecode,
+    baconEncode, baconDecode, a1z26Encode, a1z26Decode, binEncode, binDecode,
+    octEncode, octDecode, decEncode, decDecode, baseCustomEncode, baseCustomDecode,
+    CODEC_OPS, codecApply, bruteDecode
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

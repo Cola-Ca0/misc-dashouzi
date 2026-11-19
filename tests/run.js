@@ -646,7 +646,7 @@ console.log('\n== 音频 ==');
 
   const morseWav = fs.readFileSync(path.join(__dirname, 'fixtures', 'wav_morse.wav'));
   const mp = M.decodeWAVPCM(M.parseWAV(morseWav), morseWav);
-  const m = M.morseDecode(mp);
+  const m = M.morseDecodePCM(mp);
   check('Morse SOS', m.text === 'SOS' && m.elements >= 6, JSON.stringify(m));
   const sp = M.spectrogram(mp, { fftSize: 1024 });
   let best = -1e9, bestK = 0;
@@ -1295,6 +1295,42 @@ console.log('\n== OLE 复合文档 ==');
     JSON.stringify(names));
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
+}
+console.log('\n== 编码工具箱 ==');
+{
+  const rt = (label, op, text, encOp, opts) => {
+    const e = M.codecApply(encOp || (op + '-encode'), text, opts);
+    const d = M.codecApply(op + '-decode', e.text || '', opts);
+    check(label + ' 往返', e.ok && d.ok && d.text === text, (e.ok ? e.text : e.error) + ' → ' + (d.ok ? d.text : d.error));
+  };
+  rt('hex', 'hex', 'flag{hex_rt}');
+  rt('base64url', 'base64url', 'flag{url_rt}');
+  rt('base32', 'base32', 'flag{b32_rt}');
+  rt('base58', 'base58', 'flag{b58_rt}');
+  rt('base62', 'base62', 'flag{b62_rt}');
+  rt('base85', 'base85', 'flag{ascii85_roundtrip!}');
+  rt('base91', 'base91', 'flag{b91_roundtrip!}');
+  rt('qp', 'qp', 'flag=qp_rt?\r\n第二行 raw bytes');
+  rt('uuencode', 'uuencode', 'flag{uu_rt} + binary-ish bytes 00 01');
+  const table = 'QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm0123456789+/';
+  const ce = M.codecApply('custom-encode', 'flag{custom_table}', { alphabet: table });
+  const cd = M.codecApply('custom-decode', ce.text || '', { alphabet: table });
+  check('自定义 Base 表往返', ce.ok && cd.ok && cd.text === 'flag{custom_table}', ce.text + ' → ' + (cd.text || cd.error));
+  check('自定义 Base 表拒绝重复字符', !M.codecApply('custom-encode', 'x', { alphabet: 'aabcd' }).ok);
+  check('摩斯往返', M.morseDecode(M.morseEncode('SOS FLAG')) === 'SOS FLAG', M.morseEncode('SOS FLAG'));
+  check('培根往返', M.baconDecode(M.baconEncode('FLAG')) === 'FLAG', M.baconEncode('FLAG'));
+  check('A1Z26 往返', M.a1z26Decode(M.a1z26Encode('FLAG')) === 'FLAG', M.a1z26Encode('FLAG'));
+  {
+    const fb = new TextEncoder().encode('flag');
+    check('二/八/十进制往返', M.binDecode(M.binEncode(fb)).length === 4 && M.decDecode(M.decEncode(fb)).length === 4 && M.octDecode(M.octEncode(fb)).length === 4);
+  }
+  check('Unicode 转义往返', M.unicodeDecode(M.unicodeEncode('flag{中文}')) === 'flag{中文}', M.unicodeEncode('flag{中文}'));
+  const b64 = M.codecApply('base64-encode', 'flag{brute_b64}').text;
+  const hits = M.bruteDecode(b64);
+  check('编码爆破命中 base64 里的 flag', hits.length > 0 && hits.some(h => h.text.indexOf('flag{brute_b64}') >= 0),
+    JSON.stringify(hits.slice(0, 3).map(h => ({ k: h.kind, s: h.score }))));
+  const rot = M.bruteDecode(M.rotN('flag{rot_rot}', 13));
+  check('编码爆破命中 ROT13', rot.some(h => h.text.indexOf('flag{rot_rot}') >= 0), JSON.stringify(rot.slice(0, 3).map(h => h.kind)));
 }
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 if (fail) { console.log('失败项：\n - ' + failures.join('\n - ')); process.exit(1); }

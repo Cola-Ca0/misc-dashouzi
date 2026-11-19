@@ -124,7 +124,23 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
 
 /* 当前图像预览：分析台/节点编辑器右侧常驻，改参数实时重画 */
 .mainrow { flex: 1; min-height: 0; display: flex; }
-.mainrow > .content, .mainrow > .nodepane, .mainrow > .aboutpane { flex: 1; min-width: 0; }
+.mainrow > .content, .mainrow > .nodepane, .mainrow > .aboutpane, .mainrow > .codecpane { flex: 1; min-width: 0; }
+
+/* 编码工具页：纯本机纯 JS，不依赖 companion */
+.codecpane { min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 14px 18px 18px; }
+.codecbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.codecbar select, .codecbar input { background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; color: var(--text); }
+.codecbar .codec-alpha { min-width: 280px; font-family: var(--mono); font-size: 12px; }
+.codecgrid { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.codecgrid textarea { width: 100%; height: 100%; min-height: 0; resize: none; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 10px 12px; font-family: var(--mono); font-size: 12px; line-height: 1.6; }
+.codecgrid textarea:focus { outline: none; border-color: var(--accent); }
+.codecnote { min-height: 18px; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+.codec-results { max-height: 34%; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+.codec-hit { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 6px 8px; cursor: pointer; }
+.codec-hit:hover { border-color: var(--accent); }
+.codec-hit .kind { font-family: var(--mono); font-size: 11px; color: var(--accent2); }
+.codec-hit .score { float: right; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.codec-hit pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-all; font-family: var(--mono); font-size: 11px; color: var(--text); max-height: 88px; overflow: hidden; }
 
 /* 版本说明页 */
 .aboutpane { min-height: 0; overflow: auto; padding: 26px 30px 60px; }

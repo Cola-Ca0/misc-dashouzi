@@ -361,7 +361,7 @@
     '-.-.-.': ';', '..--.-': '_', '...-..-': '$', '.--.-.': '@'
   };
 
-  function morseDecode(pcm, opts) {
+  function morseDecodePCM(pcm, opts) {
     const o = opts || {};
     const mix = mixSamples(pcm);
     const sr = pcm.sampleRate;
@@ -872,7 +872,7 @@
       const lsb = scanAudioLSB(pcm);
       findings.push(...lsb.findings);
       artifacts.push(...lsb.artifacts);
-      const m = morseDecode(pcm, {});
+      const m = morseDecodePCM(pcm, {});
       audio.morse = m;
       if (m.text && m.text.replace(/[^A-Z0-9]/g, '').length >= 2) {
         findings.push(finding('L4', 'morse', `Morse 解码：${m.text}`, {
@@ -964,6 +964,6 @@
 
   Object.assign(MDZ, {
     parseWAV, decodeWAVPCM, audioPCMValue, extractAudioBits, scanAudioLSB, waveform, fft, spectrogram,
-    morseDecode, dtmfDecode, parseID3v2, parseID3v1, decodeID3Text, auditWAV, auditMP3
+    morseDecodePCM, dtmfDecode, parseID3v2, parseID3v1, decodeID3Text, auditWAV, auditMP3
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

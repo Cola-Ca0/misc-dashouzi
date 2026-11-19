@@ -59,6 +59,7 @@
     <div class="topbar">
       <div class="viewtabs" id="viewtabs">
         <button class="vtab on" data-view="analysis">分析台</button>
+        <button class="vtab" data-view="codec">编码工具</button>
         <button class="vtab" data-view="nodes">节点编辑器</button>
         <button class="vtab" data-view="about">版本说明</button>
       </div>
@@ -100,6 +101,25 @@
       <input type="file" id="node-file" accept="image/*" hidden>
     </div>
     <div class="aboutpane" id="pane-about" style="display:none"></div>
+    <div class="codecpane" id="pane-codec" style="display:none">
+      <div class="codecbar">
+        <select id="codec-op"></select>
+        <input id="codec-alpha" class="codec-alpha" placeholder="自定义字母表，例如 0123456789abcdef…（换表 Base64 就填 64 个字符）" spellcheck="false" autocomplete="off" style="display:none">
+        <button class="btn mini" id="codec-run">执行</button>
+        <button class="btn mini" id="codec-swap">结果→输入</button>
+        <button class="btn mini" id="codec-copy">复制</button>
+        <button class="btn mini" id="codec-dl">下载</button>
+        <span class="spacer"></span>
+        <button class="btn mini" id="codec-load">读入当前文件</button>
+        <button class="btn mini" id="codec-brute">编码爆破</button>
+      </div>
+      <div class="codecgrid">
+        <textarea id="codec-in" spellcheck="false" placeholder="输入要处理的内容……&#10;爆破模式：把可能经过编码的整段文本粘进来"></textarea>
+        <textarea id="codec-out" spellcheck="false" readonly placeholder="结果（二进制结果会按 hex 显示，可下载原字节）"></textarea>
+      </div>
+      <div class="codecnote" id="codec-note">全部在本机算，不需要 companion。</div>
+      <div class="codec-results" id="codec-results"></div>
+    </div>
     <aside class="pv" id="pv">
       <div class="pv-head">
         <span class="pv-title">当前图像</span>
