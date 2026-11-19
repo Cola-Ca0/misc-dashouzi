@@ -53,7 +53,7 @@
       items: [
         '魔数识别 + 扩展名对账（真身与扩展名不符时点名）',
         'strings / UTF-16 扫描、编码自动链（hex/base64/base32/base85/base91/uu/URL/HTML）；解出来是文件就切产物',
-        '编码工具页（纯本机、不需要 companion）：Base64/32/58/62/85/91、Hex、URL、HTML、QP、Unicode、UU、ROT13/47、Atbash、摩斯、培根、A1Z26、二/八/十进制字节，全部可编可解',
+        '编码工具页（纯本机、不需要 companion）：Base16/32/58/62/64/64URL/85/91/92/100、URL、HTML、QP、Unicode、UU、ROT13/47、Atbash、摩斯、培根、A1Z26、二/八/十进制字节，全部可编可解',
         '自定义 Base 表：任意字母表编码/解码（换表 Base64、Base32 直接填表），长度 2/4/8/16/32/64 走位流，其余走大整数',
         '编码爆破：常见解码器 + ROT1-25 + Atbash + 三层自动链全跑，按可读性与 flag 命中排序，点一条直接载入',
         '不可见字符隐写：零宽字符、Unicode Tag（U+E0000 区）、变体选择符（VS1–VS240）三种都还原成文本/产物',
@@ -68,7 +68,7 @@
     {
       version: '1.1.0', date: '2026-11-19', title: '编码工具箱与格式大扩展',
       added: [
-        '「编码工具」独立页：Base64/32/58/62/85/91、Hex、二/八/十进制、URL/HTML/QP/Unicode/UU、ROT13/47、Atbash、摩斯、培根、A1Z26，双向转换；自定义 Base 字母表；编码爆破（全部解码器 + ROT + 常见换表 + 多层链，按可读性/flag 排序）',
+        '「编码工具」独立页：Base16/32/58/62/64/64URL/85/91/92/100、二/八/十进制、URL/HTML/QP/Unicode/UU、ROT13/47、Atbash、摩斯、培根、A1Z26，双向转换；自定义 Base 字母表；编码爆破（全部解码器 + ROT + 常见换表 + 多层链，按可读性/flag 排序）',
         '分析时发现常见编码会同时显示原文与自动解码结果，可直接转到编码页继续',
         '新格式：PSD（图层/隐藏层预览/合成图）、SQLite 行扫描、Git 松散对象与 packfile（OFS/REF delta）、FLAC 元数据、ISO9660、MP4/MOV、Java class、PCX、TIFF（PackBits/LZW/Deflate/predictor）、bzip2/TGA/LNK/OLE/DTMF',
         'XZ/LZMA2 解压：多块、连接流、Delta、x86 BCJ、CRC32/CRC64/SHA-256 校验与尾部附加数据',

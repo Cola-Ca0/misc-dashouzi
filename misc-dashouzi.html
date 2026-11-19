@@ -1944,6 +1944,84 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     return Uint8Array.from(out);
   }
 
+  // ---------- base92（thenoviceoof 原版：91 字符、13 bit → 2 字符） ----------
+  // 可打印 ASCII 去掉 " ` ~ 三个字符，共 91 个；~ 单独表示空串。
+  const B92 = (() => {
+    let a = '';
+    for (let c = 33; c <= 126; c++) if (c !== 34 && c !== 96 && c !== 126) a += String.fromCharCode(c);
+    return a;
+  })();
+  const B92_INDEX = new Map(Array.from(B92, (c, i) => [c, i]));
+  function b92encode(bytes) {
+    const b = toU8(bytes);
+    if (!b.length) return '~';
+    let out = '', val = 0, bits = 0;
+    for (const byte of b) {
+      val = (val << 8) | byte; bits += 8;
+      while (bits >= 13) {
+        const x = (val >>> (bits - 13)) & 0x1FFF;
+        out += B92[Math.floor(x / 91)] + B92[x % 91];
+        bits -= 13;
+        val = bits ? val & ((1 << bits) - 1) : 0;
+      }
+    }
+    if (bits > 0) {
+      if (bits < 7) {
+        out += B92[(val << (6 - bits)) & 0x3F];
+      } else {
+        const x = (val << (13 - bits)) & 0x1FFF;
+        out += B92[Math.floor(x / 91)] + B92[x % 91];
+      }
+    }
+    return out;
+  }
+  function b92decode(s) {
+    const t = String(s).replace(/\s+/g, '');
+    if (t === '~') return new Uint8Array(0);
+    if (!t.length || t.length === 1) return null;   // 单字符不构成完整编码
+    const out = [];
+    let val = 0, bits = 0;
+    const pushBits = (x, n) => {
+      val = (val << n) | x; bits += n;
+      while (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; }
+      val = bits ? val & ((1 << bits) - 1) : 0;
+    };
+    for (let i = 0; i < t.length; i += 2) {
+      const a = B92_INDEX.get(t[i]);
+      if (a === undefined) return null;
+      if (i + 1 < t.length) {
+        const b = B92_INDEX.get(t[i + 1]);
+        if (b === undefined) return null;
+        const x = a * 91 + b;
+        if (x > 0x1FFF) return null;   // 超出 13 bit 的编码不合法
+        pushBits(x, 13);
+      } else {
+        if (a > 0x3F) return null;     // 末位单字符只能是 6 bit
+        pushBits(a, 6);
+      }
+    }
+    return Uint8Array.from(out);
+  }
+
+  // ---------- base100（AdamNiederer/base100：U+1F3F7 + byte，一字符一字节） ----------
+  const B100_BASE = 0x1F3F7;
+  function b100encode(bytes) {
+    let s = '';
+    for (const b of toU8(bytes)) s += String.fromCodePoint(B100_BASE + b);
+    return s;
+  }
+  function b100decode(s) {
+    const chars = Array.from(String(s).replace(/\s+/g, ''));
+    if (!chars.length) return null;
+    const out = [];
+    for (const ch of chars) {
+      const cp = ch.codePointAt(0);
+      if (cp < B100_BASE || cp > B100_BASE + 255) return null;
+      out.push(cp - B100_BASE);
+    }
+    return Uint8Array.from(out);
+  }
+
   // ---------- uuencode：每行 1 个长度字符 + 若干 4 字符组 ----------
   function uudecode(text) {
     const lines = String(text).split(/\r?\n/);
@@ -2006,6 +2084,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
   const B32_RE = /[A-Z2-7]{10,}={0,6}/g;
   const A85_RE = /(?:<~)?[!-u]{20,}(?:~>)?/g;
   const B91_RE = /[A-Za-z0-9!#$%&()*+,./:;<=>?@[\]^_`{|}~"]{20,}/g;
+  const B100_RE = /[\u{1F3F7}-\u{1F4F6}]{6,}/gu;
 
   function asText(bytes) {
     if (!bytes || bytes.length < 4) return null;
@@ -2050,6 +2129,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     for (const m of s.matchAll(B32_RE)) { const b = b32decode(m[0]); if (b) push('base32', b); }
     for (const m of s.matchAll(A85_RE)) { const b = a85decode(m[0]); if (b) push('ascii85', b); }
     for (const m of s.matchAll(B91_RE)) { const b = b91decode(m[0]); if (b) push('base91', b); }
+    for (const m of s.matchAll(B100_RE)) { const b = b100decode(m[0]); if (b) push('base100', b); }
     if (/^begin\s+\d{3}\s+/m.test(s)) { const b = uudecode(s); if (b) push('uuencode', b); }
     const u = urlDecode(s); if (u) out.push({ kind: 'url', text: u });
     const h = htmlDecode(s); if (h) out.push({ kind: 'html', text: h });
@@ -2084,7 +2164,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     const s = String(text || '');
     const out = [];
     const tokens = [];
-    for (const m of s.matchAll(/[A-Za-z0-9+/=<>~!#$%&()*+,./:;<=>?@[\]^_`{|}~"]{12,}/g)) tokens.push(m[0]);
+    for (const m of s.matchAll(/[A-Za-z0-9+/=<>~!#$%&()*+,./:;<=>?@[\]^_`{|}~"]{12,}|[\u{1F3F7}-\u{1F4F6}]{6,}/gu)) tokens.push(m[0]);
     for (const t of tokens.slice(0, 32)) {
       if (t.length < (minLen || 12)) continue;
       for (const r of decodeChain(t)) out.push(r);
@@ -2398,17 +2478,19 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
   // ---------- 统一入口 ----------
   const CODEC_OPS = [
     { group: 'Base 系列', items: [
-      { id: 'base64-encode', label: 'Base64 编码' }, { id: 'base64-decode', label: 'Base64 解码' },
-      { id: 'base64url-encode', label: 'Base64URL 编码' }, { id: 'base64url-decode', label: 'Base64URL 解码' },
+      { id: 'hex-encode', label: 'Base16 编码（Hex）' }, { id: 'hex-decode', label: 'Base16 解码（Hex）' },
       { id: 'base32-encode', label: 'Base32 编码' }, { id: 'base32-decode', label: 'Base32 解码' },
       { id: 'base58-encode', label: 'Base58 编码' }, { id: 'base58-decode', label: 'Base58 解码' },
       { id: 'base62-encode', label: 'Base62 编码' }, { id: 'base62-decode', label: 'Base62 解码' },
+      { id: 'base64-encode', label: 'Base64 编码' }, { id: 'base64-decode', label: 'Base64 解码' },
+      { id: 'base64url-encode', label: 'Base64URL 编码' }, { id: 'base64url-decode', label: 'Base64URL 解码' },
       { id: 'base85-encode', label: 'Base85 / Ascii85 编码' }, { id: 'base85-decode', label: 'Base85 / Ascii85 解码' },
       { id: 'base91-encode', label: 'Base91 编码' }, { id: 'base91-decode', label: 'Base91 解码' },
+      { id: 'base92-encode', label: 'Base92 编码' }, { id: 'base92-decode', label: 'Base92 解码' },
+      { id: 'base100-encode', label: 'Base100 编码（Emoji）' }, { id: 'base100-decode', label: 'Base100 解码（Emoji）' },
       { id: 'custom-encode', label: '自定义 Base 编码（填字母表）' }, { id: 'custom-decode', label: '自定义 Base 解码（填字母表）' }
     ] },
     { group: '字节 / 文本', items: [
-      { id: 'hex-encode', label: 'Hex 编码' }, { id: 'hex-decode', label: 'Hex 解码' },
       { id: 'bin-encode', label: '二进制 (01) 编码' }, { id: 'bin-decode', label: '二进制 (01) 解码' },
       { id: 'oct-encode', label: '八进制编码' }, { id: 'oct-decode', label: '八进制解码' },
       { id: 'dec-encode', label: '十进制字节编码' }, { id: 'dec-decode', label: '十进制字节解码' },
@@ -2453,6 +2535,14 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
         case 'base85-decode': { const b = a85decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Ascii85' }; }
         case 'base91-encode': return okText(b91encode(enc));
         case 'base91-decode': { const b = b91decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base91' }; }
+        case 'base92-encode': return okText(b92encode(enc));
+        case 'base92-decode': {
+          const b = b92decode(s);
+          if (!b) return { ok: false, error: '不是合法 Base92' };
+          return b.length ? okBytes(b) : okText('');
+        }
+        case 'base100-encode': return okText(b100encode(enc));
+        case 'base100-decode': { const b = b100decode(s); return b ? okBytes(b) : { ok: false, error: '不是合法 Base100（应为 U+1F3F7–U+1F4F6 的 emoji）' }; }
         case 'custom-encode': { const r = baseCustomEncode(enc, o.alphabet); return r.error ? { ok: false, error: r.error } : okText(r.text); }
         case 'custom-decode': { const r = baseCustomDecode(s, o.alphabet); return r.error ? { ok: false, error: r.error } : okBytes(r.bytes); }
         case 'hex-encode': return okText(hexEncode(enc));
@@ -2570,6 +2660,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     rotN, rot47, atbash, urlDecode, htmlDecode,
     decodeOnce, decodeChain, scanText,
     b32encode, b64urlEncode, b64urlDecode, a85encode, b91encode, b58encode, b58decode,
+    b92encode, b92decode, b100encode, b100decode, B92, B100_BASE,
     b62encode, b62decode, hexEncode, hexDecode, qpEncode, qpDecode, uuencode,
     urlEncode, htmlEncode, unicodeEncode, unicodeDecode, morseEncode, morseDecode,
     baconEncode, baconDecode, a1z26Encode, a1z26Decode, binEncode, binDecode,
@@ -13764,7 +13855,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
       items: [
         '魔数识别 + 扩展名对账（真身与扩展名不符时点名）',
         'strings / UTF-16 扫描、编码自动链（hex/base64/base32/base85/base91/uu/URL/HTML）；解出来是文件就切产物',
-        '编码工具页（纯本机、不需要 companion）：Base64/32/58/62/85/91、Hex、URL、HTML、QP、Unicode、UU、ROT13/47、Atbash、摩斯、培根、A1Z26、二/八/十进制字节，全部可编可解',
+        '编码工具页（纯本机、不需要 companion）：Base16/32/58/62/64/64URL/85/91/92/100、URL、HTML、QP、Unicode、UU、ROT13/47、Atbash、摩斯、培根、A1Z26、二/八/十进制字节，全部可编可解',
         '自定义 Base 表：任意字母表编码/解码（换表 Base64、Base32 直接填表），长度 2/4/8/16/32/64 走位流，其余走大整数',
         '编码爆破：常见解码器 + ROT1-25 + Atbash + 三层自动链全跑，按可读性与 flag 命中排序，点一条直接载入',
         '不可见字符隐写：零宽字符、Unicode Tag（U+E0000 区）、变体选择符（VS1–VS240）三种都还原成文本/产物',
@@ -13779,7 +13870,7 @@ body.no-bg .side-hero { height: 60px; border-bottom-color: transparent; }
     {
       version: '1.1.0', date: '2026-11-19', title: '编码工具箱与格式大扩展',
       added: [
-        '「编码工具」独立页：Base64/32/58/62/85/91、Hex、二/八/十进制、URL/HTML/QP/Unicode/UU、ROT13/47、Atbash、摩斯、培根、A1Z26，双向转换；自定义 Base 字母表；编码爆破（全部解码器 + ROT + 常见换表 + 多层链，按可读性/flag 排序）',
+        '「编码工具」独立页：Base16/32/58/62/64/64URL/85/91/92/100、二/八/十进制、URL/HTML/QP/Unicode/UU、ROT13/47、Atbash、摩斯、培根、A1Z26，双向转换；自定义 Base 字母表；编码爆破（全部解码器 + ROT + 常见换表 + 多层链，按可读性/flag 排序）',
         '分析时发现常见编码会同时显示原文与自动解码结果，可直接转到编码页继续',
         '新格式：PSD（图层/隐藏层预览/合成图）、SQLite 行扫描、Git 松散对象与 packfile（OFS/REF delta）、FLAC 元数据、ISO9660、MP4/MOV、Java class、PCX、TIFF（PackBits/LZW/Deflate/predictor）、bzip2/TGA/LNK/OLE/DTMF',
         'XZ/LZMA2 解压：多块、连接流、Delta、x86 BCJ、CRC32/CRC64/SHA-256 校验与尾部附加数据',
@@ -16992,6 +17083,7 @@ catch (e) {
     sel.innerHTML = (M.CODEC_OPS || []).map(g =>
       `<optgroup label="${esc(g.group)}">${g.items.map(it => `<option value="${it.id}">${esc(it.label)}</option>`).join('')}</optgroup>`
     ).join('');
+    sel.value = 'base64-decode';
     const isCustom = () => /^custom-/.test(sel.value);
     const syncAlpha = () => { alpha.style.display = isCustom() ? '' : 'none'; };
     sel.addEventListener('change', syncAlpha);

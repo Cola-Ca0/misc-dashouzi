@@ -2562,6 +2562,7 @@
     sel.innerHTML = (M.CODEC_OPS || []).map(g =>
       `<optgroup label="${esc(g.group)}">${g.items.map(it => `<option value="${it.id}">${esc(it.label)}</option>`).join('')}</optgroup>`
     ).join('');
+    sel.value = 'base64-decode';
     const isCustom = () => /^custom-/.test(sel.value);
     const syncAlpha = () => { alpha.style.display = isCustom() ? '' : 'none'; };
     sel.addEventListener('change', syncAlpha);

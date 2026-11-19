@@ -474,6 +474,9 @@ function zeroBmp() {
       const out = document.querySelector('#codec-out');
       const alpha = document.querySelector('#codec-alpha');
       const run = () => document.querySelector('#codec-run').click();
+      const defaultOp = sel.value;
+      const hasB92 = !!sel.querySelector('option[value="base92-decode"]');
+      const hasB100 = !!sel.querySelector('option[value="base100-decode"]');
       sel.value = 'base64-decode'; inp.value = 'ZmxhZ3tjb2RlY19jZHB9'; run();
       const b64 = out.value;
       const table = 'QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm0123456789+/';
@@ -485,10 +488,11 @@ function zeroBmp() {
       inp.value = 'ZmxhZ3ticnV0ZV9jZHB9';
       document.querySelector('#codec-brute').click();
       const hits = document.querySelectorAll('.codec-hit').length;
-      return { shown: getComputedStyle(pane).display !== 'none', b64, custom, hits, alphaShown: alpha.style.display !== 'none' };
+      return { shown: getComputedStyle(pane).display !== 'none', b64, custom, hits, alphaShown: alpha.style.display !== 'none', defaultOp, hasB92, hasB100 };
     })()`);
     if (!extra.codec.shown || extra.codec.b64 !== 'flag{codec_cdp}' || extra.codec.custom !== 'flag{custom_cdp}'
-      || extra.codec.hits < 1 || !extra.codec.alphaShown) {
+      || extra.codec.hits < 1 || !extra.codec.alphaShown
+      || extra.codec.defaultOp !== 'base64-decode' || !extra.codec.hasB92 || !extra.codec.hasB100) {
       throw new Error('编码工具页异常：' + JSON.stringify(extra.codec));
     }
     await ev(`document.querySelector('#viewtabs [data-view="analysis"]').click()`);

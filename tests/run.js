@@ -1630,6 +1630,19 @@ console.log('\n== 编码工具箱 ==');
   rt('base62', 'base62', 'flag{b62_rt}');
   rt('base85', 'base85', 'flag{ascii85_roundtrip!}');
   rt('base91', 'base91', 'flag{b91_roundtrip!}');
+  rt('base92', 'base92', 'flag{b92_roundtrip!}');
+  rt('base100', 'base100', 'flag{b100_roundtrip} 中文😀');
+  check('Base92 参考向量', M.codecApply('base92-encode', 'hello').text === 'Fc_$aOB'
+    && M.codecApply('base92-decode', 'Fc_$aOB').text === 'hello'
+    && M.codecApply('base92-encode', '').text === '~', M.codecApply('base92-encode', 'hello').text);
+  {
+    const emo = M.codecApply('base100-encode', 'flag{emoji_chain}').text;
+    const cp = Array.from(emo).map(c => c.codePointAt(0));
+    const chain = M.decodeOnce(emo);
+    check('Base100 码点映射与自动识别', cp[0] === 0x1F3F7 + 0x66 && cp.length === 17
+      && chain.some(r => r.kind === 'base100' && r.text.indexOf('flag{emoji_chain}') >= 0),
+      JSON.stringify({ first: cp[0], n: cp.length, kinds: chain.map(r => r.kind) }));
+  }
   rt('qp', 'qp', 'flag=qp_rt?\r\n第二行 raw bytes');
   rt('uuencode', 'uuencode', 'flag{uu_rt} + binary-ish bytes 00 01');
   const table = 'QWERTYUIOPASDFGHJKLZXCVBNMqwertyuiopasdfghjklzxcvbnm0123456789+/';
