@@ -99,7 +99,7 @@
 - TIFF：IFD/ExifIFD/GPS/IFD1 标签、内嵌 JPEG 提取、原始字符串兜底
 - WebP：RIFF chunk 遍历、VP8X 画布、EXIF/XMP、ANIM/ANMF、RIFF 后附加
 - TGA / PSD：TGA 真彩/RLE/footer；PSD 图层记录、隐藏图层预览与 BMP 导出、PackBits/ZIP 图层、合成图 R/G/B、尾部附加
-- TAR / RAR / 7Z / bzip2 / OLE2 / PDF：成员遍历与提取、RAR4/RAR5 文件表、7Z 未压缩文件表、OLE 流提取、PDF 对象/增量更新/内嵌文件/图片/JS
+- TAR / RAR / 7Z / bzip2 / ISO9660 / MP4 / OLE2 / PDF：成员遍历与提取、RAR4/RAR5 文件表、7Z 未压缩文件表、OLE 流提取、PDF 对象/增量更新/内嵌文件/图片/JS
 - 字体（sfnt 表）、SQLite（B 树叶页逐行扫描，UTF-8/UTF-16、溢出页）、Git（松散对象 + packfile/OFS_DELTA）、ELF/PE（节表与 overlay）、Windows 快捷方式（LNK）
 
 **流水线**
@@ -216,10 +216,10 @@ python build.py
 # 发布版：不内联壁纸（仓库里的成品就是这个）
 python build.py --no-bg
 
-# 回归测试（单元向量 + 90 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
+# 回归测试（单元向量 + 92 个 fixture + 真实样本 + fuzz + 修复 + 音频/pcap/条码 + 对比/报告/递归树）
 node tests/run.js
 
-# 浏览器自检（当前 110 项）
+# 浏览器自检（当前 112 项）
 msedge --headless=new --dump-dom "file:///.../misc-dashouzi.html?selftest=1"
 
 # 浏览器冒烟（需要 Edge；验证自检、上传、位平面缩放、批量、双图对比、零尺寸、50 文件上限、Worker）
@@ -247,7 +247,7 @@ src/40-bmp.js       BMP 头/夹缝/像素解码
 src/50-formats.js   GIF/ICO/SVG/ZIP/TIFF/WebP/TGA/PSD
 src/52-carrier.js   字体 / SQLite 行 / Git / ELF / PE / LNK / OLE 审计
 src/53-pdf.js       PDF 结构审计
-src/55-archives.js  TAR / RAR / 7Z
+src/55-archives.js  TAR / RAR / 7Z / bzip2 / ISO / MP4
 src/60-scan.js      位平面/LSB 扫描与打分、渲染
 src/62-audio.js     WAV/MP3/FLAC 审计、音频 LSB、Morse、DTMF、FFT 频谱
 src/64-pcap.js      pcap/pcapng、TCP 重组、DNS/HTTP/USB/ICMP

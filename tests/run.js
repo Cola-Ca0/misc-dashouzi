@@ -1296,6 +1296,35 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== MP4 ==');
+{
+  const m = fs.readFileSync(path.join(__dirname, 'fixtures', 'clip.mp4'));
+  check('MP4 类型识别', M.detectType(m, 'x.mp4').format === 'MP4', M.detectType(m, 'x.mp4').format);
+  const r = M.auditMP4(m, 'clip.mp4');
+  const p = r.parsed;
+  check('MP4 box 树与元数据', !!p && p.boxes.length >= 8 && p.meta.length === 2
+    && p.meta.some(x => x.text === 'flag{mp4_meta}') && p.meta.some(x => x.text === 'flag{mp4_comment}'),
+    JSON.stringify(p && p.meta));
+  check('MP4 free 与尾部被捞出', r.findings.some(f => f.type === 'mp4_free') && r.findings.some(f => f.type === 'mp4_trailer')
+    && (r.artifacts || []).some(a => a.name === 'mp4-trailer.bin'), JSON.stringify(r.findings.map(f => f.type)));
+  const an = M.analyze(m, 'clip.mp4', {});
+  check('MP4 进入分析链', findingText(an).indexOf('flag{mp4_meta}') >= 0 && findingText(an).indexOf('flag{mp4_free}') >= 0, findingText(an).slice(0, 160));
+}
+console.log('\n== ISO9660 ==');
+{
+  const iso = fs.readFileSync(path.join(__dirname, 'fixtures', 'flagdisk.iso'));
+  check('ISO 类型识别', M.detectType(iso, 'x.iso').format === 'ISO', M.detectType(iso, 'x.iso').format);
+  const r = M.auditISO(iso, 'x.iso');
+  const p = r.parsed;
+  check('ISO 卷标与文件表', !!p && p.volId === 'FLAGDISK' && p.files.length === 2 && p.files[0].path === 'FLAG.TXT',
+    JSON.stringify(p && p.files));
+  const art = (r.artifacts || []).find(a => /^iso-FLAG/.test(a.name));
+  check('ISO 文件内容与尾部', r.findings.some(f => f.type === 'iso_flag' && f.actual === 'flag{iso9660_file}')
+    && r.findings.some(f => f.type === 'iso_trailer') && !!art && Buffer.from(art.bytes).toString('latin1') === 'flag{iso9660_file}\n',
+    JSON.stringify({ arts: (r.artifacts || []).map(a => a.name), types: r.findings.map(f => f.type) }));
+  const an = M.analyze(iso, 'flagdisk.iso', {});
+  check('ISO 进入分析链', findingText(an).indexOf('flag{iso9660_file}') >= 0, findingText(an).slice(0, 160));
+}
 console.log('\n== Unicode 不可见字符 ==');
 {
   const u = fs.readFileSync(path.join(__dirname, 'fixtures', 'unicode_tag.txt'));

@@ -248,6 +248,8 @@
       case 'MP3': return MDZ.auditMP3(bytes, name, opts);
       case 'PDF': return MDZ.auditPDF(bytes, name, opts);
       case 'TAR': return MDZ.auditTAR(bytes, name, opts);
+      case 'ISO': return MDZ.auditISO(bytes, name);
+      case 'MP4': return MDZ.auditMP4(bytes, name);
       case 'RAR': return MDZ.auditRAR(bytes, name, opts);
       case '7Z': return MDZ.audit7Z(bytes, name, opts);
       case 'BZIP2': return MDZ.auditBzip2(bytes, name, opts);

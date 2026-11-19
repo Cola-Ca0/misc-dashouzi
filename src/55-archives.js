@@ -7,11 +7,12 @@
 (function (root) {
   'use strict';
   const MDZ = root.MDZ = root.MDZ || {};
-  const { toU8, ascii, cstr, finding, artifact } = MDZ;
+  const { toU8, ascii, cstr, hex, finding, artifact } = MDZ;
 
   const le16 = (b, o) => b[o] | (b[o + 1] << 8);
   const le32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
   const u64 = (b, o) => le32(b, o) + le32(b, o + 4) * 4294967296;
+  const be32 = (b, o) => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
 
   // ---------- TAR ----------
   function tarChecksumOk(h) {
@@ -387,5 +388,277 @@
     return { findings, artifacts, image: null, parsed: z };
   }
 
-  Object.assign(MDZ, { isTAR, auditTAR, isRAR, auditRAR, is7Z, audit7Z, auditBzip2, tarNum, tarChecksumOk });
+  // ---------- ISO9660 ----------
+  // 主卷描述符在扇区 16；目录记录里 ext attr 之后的 extent 就是文件数据。
+  // Joliet 用 supplementary volume descriptor 的 UTF-16BE 文件名。
+  function isoRecord(b, off, end) {
+    if (off + 33 > end || off + 33 > b.length) return null;
+    const len = b[off];
+    if (len < 34 || off + len > end || off + len > b.length) return null;
+    const nameLen = b[off + 32];
+    if (33 + nameLen > len) return null;
+    return {
+      len,
+      lba: le32(b, off + 2) + b[off + 1],
+      size: le32(b, off + 10),
+      flags: b[off + 25],
+      nameBytes: b.subarray(off + 33, off + 33 + nameLen)
+    };
+  }
+
+  function isoName(rec, joliet) {
+    const n = rec.nameBytes;
+    if (n.length === 1 && n[0] === 0) return '.';
+    if (n.length === 1 && n[0] === 1) return '..';
+    let s;
+    if (joliet) {
+      s = '';
+      for (let i = 0; i + 1 < n.length; i += 2) s += String.fromCharCode((n[i] << 8) | n[i + 1]);
+    } else {
+      s = ascii(n, n.length);
+    }
+    return s.replace(/;1$/, '').replace(/\.$/, '');
+  }
+
+  function isoWalk(b, blockSize, lba, size, prefix, out, depth, seen, joliet) {
+    if (depth > 12 || out.length >= 2000) return;
+    const key = lba + ':' + size;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const start = lba * blockSize;
+    const end = Math.min(start + size, b.length);
+    let p = start;
+    while (p + 33 <= end && out.length < 2000) {
+      const len = b[p];
+      if (len === 0) { p = (Math.floor(p / blockSize) + 1) * blockSize; continue; }
+      if (len < 34 || p + len > end) break;
+      const rec = isoRecord(b, p, end);
+      if (!rec) break;
+      const nm = isoName(rec, joliet);
+      if (nm && nm !== '.' && nm !== '..') {
+        const path = prefix ? prefix + '/' + nm : nm;
+        if (rec.flags & 0x02) isoWalk(b, blockSize, rec.lba, rec.size, path, out, depth + 1, seen, joliet);
+        else out.push({ path, lba: rec.lba, size: rec.size });
+      }
+      p += len;
+    }
+  }
+
+  function auditISO(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    if (b.length < 17 * 2048) return { findings: [finding('L0', 'format', 'ISO 不足 17 个扇区')], artifacts, image: null };
+    let pvd = -1, svd = -1;
+    for (let sec = 16; sec < 48 && sec * 2048 + 7 <= b.length; sec++) {
+      const off = sec * 2048;
+      if (ascii(b.subarray(off + 1, off + 6), 5) !== 'CD001') continue;
+      if (b[off] === 1 && pvd < 0) pvd = off;
+      else if (b[off] === 2 && svd < 0) svd = off;
+      else if (b[off] === 255) break;
+    }
+    if (pvd < 0) return { findings: [finding('L0', 'format', '找不到 ISO 主卷描述符')], artifacts, image: null };
+    const blockSize = le16(b, pvd + 128) || 2048;
+    const volBlocks = le32(b, pvd + 80);
+    const volId = ascii(b.subarray(pvd + 40, pvd + 72), 32).replace(/\s+$/, '');
+    const sysId = ascii(b.subarray(pvd + 8, pvd + 40), 32).replace(/\s+$/, '');
+    const joliet = svd >= 0 && ascii(b.subarray(svd + 88, svd + 90), 2) === '%/';
+    const rootOff = (joliet ? svd : pvd) + 156;
+    const root = isoRecord(b, rootOff, rootOff + 4096);
+    if (!root) return { findings: [finding('L0', 'format', 'ISO 根目录记录无效')], artifacts, image: null };
+    const files = [];
+    isoWalk(b, blockSize, root.lba, root.size, '', files, 0, new Set(), joliet);
+    findings.push(finding('L1', 'iso', `ISO9660 · ${volId || '(无卷标)'} · ${blockSize} 字节/块 · ${volBlocks} 块 · ${files.length} 个文件`, {
+      confidence: 0.95, offset: 16 * 2048,
+      declared: `卷空间 ${volBlocks} 块（${volBlocks * blockSize} 字节）`,
+      actual: `文件 ${files.length} 个${joliet ? '，Joliet UTF-16 文件名' : ''}`,
+      detail: `System ID: ${sysId || '(空)'}；主卷描述符 @ 0x${hex(pvd)}${svd >= 0 ? '，补充卷 @ 0x' + hex(svd) : ''}`,
+      recipe: '7z l image.iso / isoinfo -l -i image.iso'
+    }));
+    if (files.length) {
+      findings.push(finding('L2', 'iso_files', `ISO 文件列表（${files.length} 个）`, {
+        confidence: 0.7,
+        actual: files.slice(0, 6).map(f => `${f.path} (${f.size})`).join(' | '),
+        preview: files.slice(0, 40).map(f => `${f.path}  ${f.size} 字节  LBA ${f.lba}`).join('\n'),
+        detail: '文件数据按目录记录里的 LBA 直接切出，小文件已作为产物导出。'
+      }));
+    }
+    const seenFlags = new Set();
+    const addFlag = (f, where) => {
+      if (!f || seenFlags.has(f)) return;
+      seenFlags.add(f);
+      findings.push(finding('L3', 'iso_flag', `${where}出现 ${f}`, { confidence: 0.99, actual: f }));
+    };
+    for (const f of MDZ.flagFindAll(volId + '\n' + sysId + '\n' + files.map(x => x.path).join('\n'))) addFlag(f, '卷标/文件名');
+    let exported = 0;
+    for (const rec of files) {
+      if (exported >= 40 || rec.size > 8 * 1024 * 1024) continue;
+      const off = rec.lba * blockSize;
+      if (off + rec.size > b.length) continue;
+      const data = b.subarray(off, off + rec.size);
+      const safe = rec.path.replace(/[^\w.\-\/]+/g, '_').replace(/\//g, '_').slice(0, 80);
+      artifacts.push(artifact('iso-' + (safe || 'file'), data, `ISO 文件 ${rec.path}（${rec.size} 字节）`));
+      exported++;
+      const text = MDZ.utf8(data) || ascii(data.subarray(0, Math.min(data.length, 65536)), Math.min(data.length, 65536));
+      for (const f of MDZ.flagFindAll(text)) addFlag(f, `文件 ${rec.path} `);
+    }
+    if (files.length > exported) {
+      findings.push(finding('L3', 'iso_limit', `只导出了 ${exported}/${files.length} 个文件`, {
+        confidence: 0.5, detail: '其余文件超过 8MB 或数量上限；可用 7z/bsdtar 按目录记录手工取。'
+      }));
+    }
+    if (volBlocks && volBlocks * blockSize < b.length) {
+      const tr = b.subarray(volBlocks * blockSize);
+      findings.push(finding('L1', 'iso_trailer', `卷空间之后还有 ${tr.length} 字节`, {
+        confidence: tr.some(x => x !== 0) ? 0.95 : 0.6,
+        offset: volBlocks * blockSize,
+        preview: ascii(tr.subarray(0, 120), Math.min(120, tr.length)),
+        detail: 'ISO 之外的附加区，常见于多会话盘或直接夹带。'
+      }));
+      artifacts.push(artifact('iso-trailer.bin', tr, 'ISO 卷空间之后的尾部数据'));
+    }
+    return { findings, artifacts, image: null, parsed: { volId, blockSize, volBlocks, joliet, files } };
+  }
+
+  // ---------- MP4 / MOV ----------
+  // box 树：size + type；size=1 时用 64 位 largesize，size=0 表示到文件尾。
+  // 只解元数据与 free/skip/mdat 结构，不解码音视频。
+  const MP4_CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl', 'udta', 'meta', 'edts', 'dinf', 'mvex', 'moof', 'traf', 'mfra']);
+  const MP4_NAMES = { '©nam': 'title', '©cmt': 'comment', '©too': 'encoder', '©day': 'date', '©ART': 'artist', '©alb': 'album', '©gen': 'genre', desc: 'description', '----': 'custom' };
+
+  function auditMP4(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    if (b.length < 12) return { findings: [finding('L0', 'format', 'MP4 太短')], artifacts, image: null };
+    const boxes = [], meta = [], flags = [];
+    let mdatBytes = 0, metaOff = -1, tailAt = -1;
+    const addFlag = (f, where) => {
+      if (!f || flags.some(x => x.flag === f)) return;
+      flags.push({ flag: f, where });
+    };
+    const addFlags = (text, where) => { for (const f of MDZ.flagFindAll(text)) addFlag(f, where); };
+    function walk(start, end, depth, path) {
+      let p = start;
+      let lastEnd = start;
+      while (p + 8 <= end) {
+        let size = be32(b, p);
+        const type = ascii(b.subarray(p + 4, p + 8), 4);
+        let header = 8;
+        if (size === 1) {
+          if (p + 16 > end) break;
+          size = be32(b, p + 8) * 4294967296 + be32(b, p + 12);
+          header = 16;
+        } else if (size === 0) {
+          size = end - p;
+        }
+        if (size < header || p + size > end) {
+          findings.push(finding('L1', 'mp4_box', `box ${type} 越界（声明 ${size} 字节）`, {
+            confidence: 0.8, offset: p, declared: `${size} 字节`, actual: `只剩 ${end - p} 字节`
+          }));
+          break;
+        }
+        const body = p + header, bodyEnd = p + size;
+        boxes.push({ type, off: p, size, path });
+        if (type === 'ftyp') {
+          const major = ascii(b.subarray(body, Math.min(body + 4, bodyEnd)), 4);
+          findings.push(finding('L1', 'mp4_ftyp', `MP4 ftyp · 主品牌 ${major}`, {
+            confidence: 0.9, offset: p,
+            actual: ascii(b.subarray(body, Math.min(body + 24, bodyEnd)), Math.min(24, bodyEnd - body)).replace(/\x00/g, ' ')
+          }));
+        } else if (type === 'mvhd' && body + 20 <= bodyEnd) {
+          const ts = be32(b, body + 12), dur = be32(b, body + 16);
+          findings.push(finding('L3', 'mp4_mvhd', `时长 ${ts ? (dur / ts).toFixed(2) : '?'} 秒`, {
+            confidence: 0.6, offset: p, actual: `timescale ${ts} · duration ${dur}`
+          }));
+        } else if (type === 'mdat') {
+          mdatBytes += bodyEnd - body;
+        } else if (type === 'free' || type === 'skip') {
+          let nz = 0;
+          for (let i = body; i < bodyEnd; i++) if (b[i]) nz++;
+          if (nz) {
+            findings.push(finding('L1', 'mp4_free', `${type} box 里有 ${nz} 个非零字节`, {
+              confidence: 0.9, offset: body,
+              declared: `${bodyEnd - body} 字节（应为空）`,
+              actual: `${nz} 字节非零`,
+              detail: 'free/skip 是播放器会跳过的填充区，出题人常直接写数据进去。',
+              preview: ascii(b.subarray(body, Math.min(bodyEnd, body + 200)), Math.min(200, bodyEnd - body)),
+              recipe: `从 0x${hex(body)} 起切 ${bodyEnd - body} 字节`
+            }));
+            artifacts.push(artifact(`mp4-${type}.bin`, b.subarray(body, bodyEnd), `MP4 ${type} box 数据`));
+            addFlags(ascii(b.subarray(body, Math.min(bodyEnd, body + 65536)), Math.min(65536, bodyEnd - body)), 'free/skip');
+          }
+        } else if (type === 'meta' && metaOff < 0) {
+          metaOff = p;
+        } else if (type === 'ilst') {
+          let ip = body;
+          while (ip + 8 <= bodyEnd) {
+            const isize = be32(b, ip);
+            const itype = ascii(b.subarray(ip + 4, ip + 8), 4);
+            if (isize < 8 || ip + isize > bodyEnd) break;
+            let dp = ip + 8;
+            while (dp + 8 <= ip + isize) {
+              const dsize = be32(b, dp);
+              const dtype = ascii(b.subarray(dp + 4, dp + 8), 4);
+              if (dsize < 8 || dp + dsize > ip + isize) break;
+              if (dtype === 'data' && dsize >= 16) {
+                const dataType = be32(b, dp + 8);
+                const payload = b.subarray(dp + 16, dp + dsize);
+                let text;
+                if (dataType === 2) text = MDZ.utf16be(payload);
+                else text = MDZ.utf8(payload) || ascii(payload, Math.min(payload.length, 4096));
+                if (text) {
+                  meta.push({ key: itype, label: MP4_NAMES[itype] || itype, text });
+                  addFlags(text, `元数据 ${MP4_NAMES[itype] || itype}`);
+                }
+              }
+              dp += dsize;
+            }
+            ip += isize;
+          }
+        }
+        if (MP4_CONTAINERS.has(type)) {
+          walk(body + (type === 'meta' ? 4 : 0), bodyEnd, depth + 1, path.concat(type));
+        }
+        lastEnd = bodyEnd;
+        p = bodyEnd;
+      }
+      if (depth === 0) tailAt = lastEnd;
+    }
+    walk(0, b.length, 0, []);
+    if (mdatBytes) {
+      findings.push(finding('L2', 'mp4_mdat', `mdat 媒体数据 ${mdatBytes} 字节（未解码）`, {
+        confidence: 0.4, actual: '音视频本体；本工具只查元数据与填充区',
+        recipe: 'ffmpeg -i file.mp4 / mp4box -info file.mp4'
+      }));
+    }
+    if (meta.length) {
+      findings.push(finding('L3', 'mp4_meta', `元数据 ${meta.length} 条`, {
+        confidence: 0.8,
+        actual: meta.slice(0, 6).map(m => `${m.label}=${m.text.slice(0, 60)}`).join(' | '),
+        preview: meta.slice(0, 24).map(m => `${m.label}: ${m.text.slice(0, 300)}`).join('\n'),
+        recipe: 'ffprobe -show_format -show_streams file.mp4 / exiftool file.mp4'
+      }));
+    }
+    for (const f of flags.slice(0, 10)) {
+      findings.push(finding('L3', 'mp4_flag', `${f.where}出现 ${f.flag}`, { confidence: 0.99, actual: f.flag }));
+    }
+    if (tailAt >= 0 && tailAt < b.length) {
+      const tr = b.subarray(tailAt);
+      findings.push(finding('L1', 'mp4_trailer', `最后一个 box 之后还有 ${tr.length} 字节`, {
+        confidence: tr.some(x => x !== 0) ? 0.95 : 0.6,
+        offset: tailAt,
+        preview: ascii(tr.subarray(0, 120), Math.min(120, tr.length)),
+        detail: '播放器读完最后一个 box 就停，尾部是天然夹带区。'
+      }));
+      artifacts.push(artifact('mp4-trailer.bin', tr, 'MP4 尾部附加数据'));
+      addFlags(ascii(tr.subarray(0, 65536), Math.min(65536, tr.length)), '尾部');
+    }
+    findings.push(finding('L1', 'mp4', `MP4 · ${boxes.length} 个 box`, {
+      confidence: 0.8, offset: 0,
+      actual: boxes.slice(0, 12).map(x => x.type + '(' + x.size + ')').join(' '),
+      detail: `顶层/嵌套 box 共 ${boxes.length} 个；元数据 ${meta.length} 条；mdat ${mdatBytes} 字节。`
+    }));
+    return { findings, artifacts, image: null, parsed: { boxes, meta, mdatBytes, tailAt } };
+  }
+
+  Object.assign(MDZ, { isTAR, auditTAR, isRAR, auditRAR, is7Z, audit7Z, auditBzip2, auditISO, auditMP4, tarNum, tarChecksumOk });
 })(typeof globalThis !== 'undefined' ? globalThis : this);

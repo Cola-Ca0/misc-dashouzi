@@ -749,6 +749,75 @@ def fixture_unicode_tag():
     return text.encode("utf-8")
 
 
+def _iso_dirrec(name, lba, size, is_dir):
+    nb = name if isinstance(name, bytes) else name.encode("ascii")
+    rec = bytearray(33)
+    rec[2:6] = struct.pack("<I", lba)
+    rec[6:10] = struct.pack(">I", lba)
+    rec[10:14] = struct.pack("<I", size)
+    rec[14:18] = struct.pack(">I", size)
+    rec[18:25] = bytes([124, 1, 1, 0, 0, 0, 0])
+    rec[25] = 0x02 if is_dir else 0
+    rec[28:30] = struct.pack("<H", 1)
+    rec[30:32] = struct.pack(">H", 1)
+    rec[32] = len(nb)
+    rec += nb
+    if len(rec) % 2:
+        rec.append(0)
+    rec[0] = len(rec)
+    return bytes(rec)
+
+
+def fixture_iso():
+    S = 2048
+    vol = 21
+    img = bytearray(S * vol)
+    flag = b"flag{iso9660_file}\n"
+    pvd = bytearray(S)
+    pvd[0] = 1
+    pvd[1:6] = b"CD001"
+    pvd[6] = 1
+    pvd[8:40] = b"CTFISO".ljust(32, b" ")
+    pvd[40:72] = b"FLAGDISK".ljust(32, b" ")
+    pvd[80:84] = struct.pack("<I", vol)
+    pvd[84:88] = struct.pack(">I", vol)
+    pvd[128:130] = struct.pack("<H", S)
+    pvd[130:132] = struct.pack(">H", S)
+    pvd[132:136] = struct.pack("<I", 10)
+    pvd[136:140] = struct.pack(">I", 10)
+    root = _iso_dirrec(b"\x00", 18, S, True)
+    pvd[156:156 + len(root)] = root
+    img[16 * S:17 * S] = pvd
+    term = bytearray(S)
+    term[0] = 255
+    term[1:6] = b"CD001"
+    term[6] = 1
+    img[17 * S:18 * S] = term
+    entries = (_iso_dirrec(b"\x00", 18, S, True) + _iso_dirrec(b"\x01", 18, S, True)
+               + _iso_dirrec(b"FLAG.TXT;1", 19, len(flag), False) + _iso_dirrec(b"NOTE.TXT;1", 20, 4, False))
+    img[18 * S:18 * S + len(entries)] = entries
+    img[19 * S:19 * S + len(flag)] = flag
+    img[20 * S:20 * S + 4] = b"note"
+    return bytes(img) + b"flag{iso_tail}"
+
+
+def _mp4_box(typ, payload):
+    return struct.pack(">I", 8 + len(payload)) + typ + payload
+
+
+def fixture_mp4():
+    data = _mp4_box(b"data", struct.pack(">II", 1, 0) + b"flag{mp4_meta}")
+    data2 = _mp4_box(b"data", struct.pack(">II", 1, 0) + b"flag{mp4_comment}")
+    ilst = _mp4_box(b"\xa9nam", data) + _mp4_box(b"\xa9cmt", data2)
+    meta = b"\x00\x00\x00\x00" + _mp4_box(b"hdlr", b"\x00" * 24) + _mp4_box(b"ilst", ilst)
+    mvhd = b"\x00" * 12 + struct.pack(">II", 1000, 5000) + b"\x00" * 80
+    moov = _mp4_box(b"moov", _mp4_box(b"mvhd", mvhd) + _mp4_box(b"udta", _mp4_box(b"meta", meta)))
+    ftyp = _mp4_box(b"ftyp", b"isom" + struct.pack(">I", 512) + b"isomiso2mp41")
+    free = _mp4_box(b"free", b"flag{mp4_free}")
+    mdat = _mp4_box(b"mdat", b"\x00" * 32)
+    return ftyp + moov + free + mdat + b"flag{mp4_tail}"
+
+
 def _git_obj_header(typ, size):
     out = bytearray([(typ << 4) | (size & 0x0f)])
     size >>= 4
@@ -1484,6 +1553,8 @@ FIXTURES = [
     ("repo.pack", fixture_git_pack, ["Git packfile", "flag{git_pack_blob}", "flag{git_pack_delta}", "flag{git_pack_commit}"]),
     ("tagged.flac", fixture_flac, ["FLAC 44100 Hz", "Vorbis 注释", "PADDING 块里有", "内嵌图片", "flag{flac_vorbis}", "flag{flac_padding}", "flag{flac_app}"]),
     ("unicode_tag.txt", fixture_unicode_tag, ["Unicode Tag 隐写", "flag{unicode_tag_stego}", "变体选择符隐写", "flag{vs_stego}"]),
+    ("flagdisk.iso", fixture_iso, ["ISO9660", "FLAGDISK", "flag{iso9660_file}", "flag{iso_tail}"]),
+    ("clip.mp4", fixture_mp4, ["MP4 ftyp", "flag{mp4_meta}", "flag{mp4_comment}", "flag{mp4_free}", "flag{mp4_tail}"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),
