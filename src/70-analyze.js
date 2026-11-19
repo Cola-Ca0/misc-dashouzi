@@ -310,13 +310,14 @@
     // 按命中计数会把大文件后半段整段饿死（真实载荷在后面就永远轮不到）。
     // 内嵌容器（zip/png/jpeg）不吃这个预算，预算花光了也继续处理。
     const budget = { tries: 3000, out: 64 * 1024 * 1024, ms: 1200, t0: Date.now() };
+    let skippedBudget = 0;
     // 整次分析共用一个「压缩流尝试」的截止时间：每层递归各自计时的话，
     // 十个产物就是十份预算，随机数据能把总耗时放大到十几秒。
     if (!result._streamDeadline) result._streamDeadline = Date.now() + 1500;
     for (const h of hits) {
       if (h.kind !== 'zip' && h.kind !== 'png' && h.kind !== 'jpeg') {
-        if (budget.out <= 0 || budget.tries <= 0) continue;
-        if (Date.now() > result._streamDeadline) continue;
+        if (budget.out <= 0 || budget.tries <= 0) { skippedBudget++; continue; }
+        if (Date.now() > result._streamDeadline) { skippedBudget++; continue; }
         budget.tries--;
       }
       if (h.kind === 'lzma') {
@@ -438,6 +439,14 @@
           result.dropped = (result.dropped || 0) + 1;
         }
       }
+    }
+    if (skippedBudget) {
+      result.findings.push(finding('L2', 'scan_budget', `跳过 ${skippedBudget} 个压缩流签名（预算/时限）`, {
+        confidence: 0.6,
+        actual: `命中 ${hits.length} 个，只尝试了 ${Math.max(0, hits.length - skippedBudget)} 个`,
+        detail: '压缩流尝试有 3000 次 / 64MB / 1.5s 的上限，防止随机数据把分析拖死。大文件后段或高噪声文件可能还有没试的流；把可疑段切出来单独分析。',
+        recipe: 'binwalk 看签名列表，或按偏移切出后单独拖入'
+      }));
     }
   }
 

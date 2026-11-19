@@ -1312,9 +1312,13 @@ console.log('\n== XZ / LZMA2 ==');
   check('XZ CRC32 校验通过', !M.xzDecompress(rd('crc32.xz')).error);
   const dz = M.xzDecompress(rd('delta.xz'));
   check('XZ Delta 过滤还原', !!dz.out && Buffer.from(dz.out).toString('latin1').indexOf('flag{xz_delta_filter}') >= 0);
-  const bcj = M.auditXZ(rd('bcj.xz'), 'bcj.xz');
-  check('XZ BCJ 明确报不支持', bcj.findings.some(f => /BCJ|不支持/.test((f.detail || '') + (f.title || '') + (f.actual || ''))),
-    JSON.stringify(bcj.findings.map(f => f.title)));
+  const bcj = M.xzDecompress(rd('bcj.xz'));
+  check('XZ BCJ(x86) 文本解码', !!bcj.out && Buffer.from(bcj.out).toString('latin1').indexOf('flag{xz_bcj_unsupported}') >= 0,
+    bcj.error || ('len ' + (bcj.out && bcj.out.length)));
+  const raw = rd('bcj_raw.bin');
+  const bcjBin = M.xzDecompress(rd('bcj_bin.xz'));
+  check('XZ BCJ(x86) 二进制逐字节还原', !!bcjBin.out && Buffer.from(bcjBin.out).equals(raw),
+    bcjBin.error || ('len ' + (bcjBin.out && bcjBin.out.length) + '/' + raw.length));
   const wrapped = Buffer.concat([Buffer.alloc(64), x]);
   const an2 = M.analyze(wrapped, 'wrapped.bin', {});
   check('文件中间的 XZ 流会被解压', M.flags(an2).indexOf('flag{xz_stream}') >= 0, M.flags(an2).join(' '));

@@ -876,6 +876,24 @@ def fixture_xz_bcj():
     return lzma.compress(data, format=lzma.FORMAT_XZ, filters=filters)
 
 
+def _bcj_sample():
+    buf = bytearray()
+    for i in range(2000):
+        buf += bytes([0xE8]) + (i * 7 % 0x10000000).to_bytes(4, "little") + bytes([0x90, 0x90])
+        if i % 50 == 0:
+            buf += bytes([0xE9]) + (i * 13 % 0x10000000).to_bytes(4, "little")
+    return bytes(buf)
+
+
+def fixture_xz_bcj_raw():
+    return _bcj_sample()
+
+
+def fixture_xz_bcj_bin():
+    filters = [{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2, "preset": 6}]
+    return lzma.compress(_bcj_sample(), format=lzma.FORMAT_XZ, filters=filters)
+
+
 def fixture_pdf_lzw():
     NL = bytes([10])
     payload = b"flag{pdf_lzw_stream}" + NL + b"padding " * 8
@@ -1788,7 +1806,9 @@ FIXTURES = [
     ("text.xz", fixture_xz_text, ["XZ 解压", "flag{xz_stream}"]),
     ("crc32.xz", fixture_xz_crc32, ["XZ 解压", "flag{xz_crc32}"]),
     ("delta.xz", fixture_xz_delta, ["XZ 解压", "flag{xz_delta_filter}"]),
-    ("bcj.xz", fixture_xz_bcj, ["BCJ"]),
+    ("bcj.xz", fixture_xz_bcj, ["XZ 解压", "flag{xz_bcj_unsupported}"]),
+    ("bcj_raw.bin", fixture_xz_bcj_raw, []),
+    ("bcj_bin.xz", fixture_xz_bcj_bin, ["XZ 解压"]),
     ("deflate.tif", fixture_tiff_deflate, ["TIFF", "Deflate"]),
     ("gray16.tif", fixture_tiff_gray16, ["TIFF", "16 位"]),
     ("palette.tif", fixture_tiff_palette, ["TIFF", "像素"]),

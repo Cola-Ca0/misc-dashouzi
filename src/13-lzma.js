@@ -329,6 +329,54 @@
     return { value: v, next: p };
   }
 
+  // x87 BCJ 的 x86 分支（CALL/JMP 相对地址转绝对）。数组与状态机照 liblzma x86.c。
+  const BCJ_MASK_ALLOWED = [true, true, true, false, true, false, false, false];
+  const BCJ_MASK_BIT = [0, 1, 2, 2, 3, 3, 3, 3];
+  function bcjX86Decode(data) {
+    const n = data.length;
+    if (n <= 4) return;
+    const test = b => b === 0 || b === 0xFF;
+    let prevPos = -5, prevMask = 0;
+    for (let i = 0; i < n - 4; i++) {
+      if ((data[i] & 0xFE) !== 0xE8) continue;
+      const offset = i - prevPos;
+      if (offset > 3) {
+        prevMask = 0;
+      } else {
+        prevMask = (prevMask << (offset - 1)) & 7;
+        if (prevMask !== 0) {
+          const b = data[i + 4 - BCJ_MASK_BIT[prevMask]];
+          if (!BCJ_MASK_ALLOWED[prevMask] || test(b)) {
+            prevPos = i;
+            prevMask = (prevMask << 1) | 1;
+            continue;
+          }
+        }
+      }
+      prevPos = i;
+      if (test(data[i + 4])) {
+        let src = ((data[i + 4] << 24) | (data[i + 3] << 16) | (data[i + 2] << 8) | data[i + 1]) >>> 0;
+        let dest = 0;
+        while (true) {
+          dest = (src - (i + 5)) >>> 0;
+          if (prevMask === 0) break;
+          const bit = BCJ_MASK_BIT[prevMask] * 8;
+          const b = (dest >>> (24 - bit)) & 0xFF;
+          if (!test(b)) break;
+          src = (dest ^ (0xFFFFFFFF >>> bit)) >>> 0;
+        }
+        data[i + 4] = (~((((dest >>> 24) & 1) - 1))) & 0xFF;
+        data[i + 3] = (dest >>> 16) & 0xFF;
+        data[i + 2] = (dest >>> 8) & 0xFF;
+        data[i + 1] = dest & 0xFF;
+        i += 4;
+      } else {
+        prevMask |= 1;
+        if (test(data[i + 4 - BCJ_MASK_BIT[prevMask]])) prevMask |= 2;
+      }
+    }
+  }
+
   function xzDecompress(input, opts) {
     const o = opts || {};
     const b = input instanceof Uint8Array ? input : new Uint8Array(input || []);
@@ -358,7 +406,7 @@
       if (flags & 0x40) { const v = xzVli(b, q); compSize = v.value; q = v.next; }
       if (flags & 0x80) { const v = xzVli(b, q); uncompSize = v.value; q = v.next; }
       const nFilters = (flags & 0x03) + 1;
-      let dictProp = -1, deltaDist = 0, unsupported = '';
+      let dictProp = -1, deltaDist = 0, bcjX86 = false, unsupported = '';
       for (let i = 0; i < nFilters; i++) {
         const id = xzVli(b, q); q = id.next;
         const ps = xzVli(b, q); q = ps.next;
@@ -368,6 +416,8 @@
           else dictProp = b[q];
         } else if (id.value === 0x03) {
           deltaDist = (b[q] | 0) + 1;
+        } else if (id.value === 0x04 && ps.value === 0) {
+          bcjX86 = true;
         } else {
           unsupported = 'XZ 过滤器 0x' + id.value.toString(16) + ' 暂不支持（BCJ 等）';
         }
@@ -379,6 +429,7 @@
       const lz = lzma2Decompress(b, dataStart, maxOut - total);
       if (!lz.out || lz.error) { error = lz.error || 'LZMA2 解压失败'; break; }
       let data = lz.out;
+      if (bcjX86) bcjX86Decode(data);
       if (deltaDist > 1) {
         for (let i = deltaDist; i < data.length; i++) data[i] = (data[i] + data[i - deltaDist]) & 255;
       }
