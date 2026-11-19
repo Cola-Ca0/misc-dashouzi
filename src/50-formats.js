@@ -382,6 +382,24 @@
     return v.map(x => typeof x === 'number' ? x : parseInt(x, 10)).filter(x => Number.isFinite(x));
   }
 
+  // parseEXIF 只保留前 32 个数组值；条带表/色表要按原始偏移整段读
+  function tiffArray(b, tag, little) {
+    if (!tag) return [];
+    if (tag.valueOffset == null) return Array.isArray(tag.value) ? tag.value : [tag.value];
+    const n = tag.count || 0;
+    const out = [];
+    let o = tag.valueOffset;
+    if (tag.type === 3) {
+      for (let i = 0; i < n && o + 2 <= b.length; i++, o += 2) out.push(little ? (b[o] | (b[o + 1] << 8)) : ((b[o] << 8) | b[o + 1]));
+    } else if (tag.type === 4) {
+      for (let i = 0; i < n && o + 4 <= b.length; i++, o += 4) {
+        out.push(little ? ((b[o + 3] << 24) | (b[o + 2] << 16) | (b[o + 1] << 8) | b[o]) >>> 0
+          : ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0);
+      }
+    }
+    return out;
+  }
+
   function tiffPackBits(src, maxOut) {
     const out = new Uint8Array(maxOut);
     let i = 0, o = 0;
@@ -452,12 +470,11 @@
     const planar = (tiffNums(get(0x011C)) || [1])[0];
     const predictor = (tiffNums(get(0x013D)) || [1])[0];
     const rowsPerStrip = (tiffNums(get(0x0116)) || [h])[0] || h;
-    const offsets = tiffNums(get(0x0111)) || [];
-    const counts = tiffNums(get(0x0117)) || [];
+    const offsets = tiffArray(b, get(0x0111), little);
+    const counts = tiffArray(b, get(0x0117), little);
     if (planar !== 1) return { error: '平面配置 2 暂不支持' };
     if (!offsets.length || !counts.length) return { error: '缺少 strip offsets' };
     if (![1, 4, 8, 16].includes(bits)) return { error: bits + ' 位样本暂不支持' };
-    if (predictor === 2 && bits !== 8) return { error: 'predictor 2 目前只解 8 位样本' };
     if (spp < 1 || spp > 8) return { error: '样本数异常（' + spp + '）' };
     const bytesPerSample = bits === 16 ? 2 : 1;
     const rowBytes = Math.ceil(w * spp * bits / 8);
@@ -479,10 +496,21 @@
         decoded = z.out;
       } else return { error: '压缩方式 ' + compression + ' 不支持', maxEnd };
       if (!decoded || decoded.length < need) return { error: '条带解压后不足 ' + need + ' 字节', maxEnd };
-      if (predictor === 2 && bits === 8) {
-        for (let r = 0; r < stripRows; r++) {
-          const ro = r * rowBytes;
-          for (let i = spp; i < rowBytes; i++) decoded[ro + i] = (decoded[ro + i] + decoded[ro + i - spp]) & 255;
+      if (predictor === 2) {
+        if (bits === 8) {
+          for (let r = 0; r < stripRows; r++) {
+            const ro = r * rowBytes;
+            for (let i = spp; i < rowBytes; i++) decoded[ro + i] = (decoded[ro + i] + decoded[ro + i - spp]) & 255;
+          }
+        } else if (bits === 16) {
+          const rd16 = o => little ? (decoded[o] | (decoded[o + 1] << 8)) : ((decoded[o] << 8) | decoded[o + 1]);
+          const wr16 = (o, v) => { if (little) { decoded[o] = v & 255; decoded[o + 1] = (v >> 8) & 255; } else { decoded[o] = (v >> 8) & 255; decoded[o + 1] = v & 255; } };
+          for (let r = 0; r < stripRows; r++) {
+            const ro = r * rowBytes;
+            for (let i = spp; i < w * spp; i++) {
+              wr16(ro + i * 2, (rd16(ro + i * 2) + rd16(ro + (i - spp) * 2)) & 0xffff);
+            }
+          }
         }
       }
       raw.set(decoded.subarray(0, need), outRow * rowBytes);
@@ -499,25 +527,14 @@
     let palette = null;
     if (photo === 3) {
       const size = 1 << bits;
-      const cmTag = get(0x0140);
-      palette = new Uint8Array(size * 3);
-      const rd16 = o => little ? (b[o] | (b[o + 1] << 8)) : ((b[o] << 8) | b[o + 1]);
-      if (cmTag && cmTag.valueOffset != null && cmTag.valueOffset + size * 6 <= b.length) {
-        // parseEXIF 只保留前 32 个数组值，色表要按原始偏移整段读
+      const cm = tiffArray(b, get(0x0140), little);
+      if (cm.length >= size * 3) {
+        palette = new Uint8Array(size * 3);
         for (let i = 0; i < size; i++) {
-          palette[i * 3] = rd16(cmTag.valueOffset + i * 2) >> 8;
-          palette[i * 3 + 1] = rd16(cmTag.valueOffset + size * 2 + i * 2) >> 8;
-          palette[i * 3 + 2] = rd16(cmTag.valueOffset + size * 4 + i * 2) >> 8;
+          palette[i * 3] = (cm[i] >> 8) & 255;
+          palette[i * 3 + 1] = (cm[i + size] >> 8) & 255;
+          palette[i * 3 + 2] = (cm[i + 2 * size] >> 8) & 255;
         }
-      } else {
-        const cm = tiffNums(cmTag) || [];
-        if (cm.length >= size * 3) {
-          for (let i = 0; i < size; i++) {
-            palette[i * 3] = (cm[i] >> 8) & 255;
-            palette[i * 3 + 1] = (cm[i + size] >> 8) & 255;
-            palette[i * 3 + 2] = (cm[i + 2 * size] >> 8) & 255;
-          }
-        } else palette = null;
       }
     }
     for (let y = 0; y < h; y++) {

@@ -319,6 +319,19 @@
     return px >= w * h;
   }
 
+  // PCX 没有通用魔数，只有 header 自洽性：0x0A + encoding=1 + 合法 bpp/planes/宽高/行宽
+  function looksLikePCX(b) {
+    if (b.length < 128 || b[0] !== 0x0A || b[2] !== 1) return false;
+    if ([0, 2, 3, 4, 5].indexOf(b[1]) < 0) return false;
+    if ([1, 2, 4, 8].indexOf(b[3]) < 0) return false;
+    const planes = b[65];
+    if (planes < 1 || planes > 4) return false;
+    const le16 = o => b[o] | (b[o + 1] << 8);
+    const w = le16(8) - le16(4) + 1, h = le16(10) - le16(6) + 1;
+    const bpl = le16(66);
+    return w > 0 && h > 0 && w <= 10000 && h <= 10000 && bpl >= 1 && bpl <= 16384 && bpl * planes * h <= 64 * 1024 * 1024;
+  }
+
   function detectType(input, name) {
     const b = toU8(input);
     let format = 'unknown', mime = 'application/octet-stream', label = '未知';
@@ -346,9 +359,13 @@
       const v = ((b[4] << 24) | (b[5] << 16) | (b[6] << 8) | b[7]) >>> 0;
       if (v === 2 || v === 3) { format = 'GIT'; mime = 'application/x-git-pack'; label = 'Git pack'; }
     }
-    // MP4/MOV：偏移 4 的 box 类型是 'ftyp'
-    if (format === 'unknown' && b.length >= 12 && ascii(b.subarray(4, 8), 4) === 'ftyp') {
-      format = 'MP4'; mime = 'video/mp4'; label = 'MP4';
+    // MP4/MOV：第一个 box 是 ftyp/moov/mdat/wide（有的 MOV 没有 ftyp）
+    if (format === 'unknown' && b.length >= 12) {
+      const t4 = ascii(b.subarray(4, 8), 4);
+      const sz = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) >>> 0;
+      if ((t4 === 'ftyp' || t4 === 'moov' || t4 === 'mdat' || t4 === 'wide') && sz >= 8 && sz <= b.length) {
+        format = 'MP4'; mime = 'video/mp4'; label = 'MP4';
+      }
     }
     // ISO9660：主卷描述符在扇区 16
     if (format === 'unknown' && b.length >= 0x8006 && ascii(b.subarray(0x8001, 0x8006), 5) === 'CD001') {
@@ -368,6 +385,7 @@
       else if (nfat >= 1 && nfat <= 64) { format = 'MACHO'; mime = 'application/x-mach-binary'; label = 'Mach-O fat'; }
     }
     if (format === 'unknown' && looksLikeTGA(b)) { format = 'TGA'; mime = 'image/x-tga'; label = 'TGA'; }
+    if (format === 'unknown' && looksLikePCX(b)) { format = 'PCX'; mime = 'image/x-pcx'; label = 'PCX'; }
     // MP3 帧同步（无 ID3 头）
     if (format === 'unknown' && b.length >= 2 && b[0] === 0xff && (b[1] & 0xe0) === 0xe0) {
       format = 'MP3'; mime = 'audio/mpeg'; label = 'MP3';

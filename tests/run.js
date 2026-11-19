@@ -1330,6 +1330,14 @@ console.log('\n== TIFF 像素 ==');
   const pred = fs.readFileSync(path.join(__dirname, 'fixtures', 'pred2.tif'));
   const rpred = M.auditTIFF(pred, 'pred2.tif');
   check('TIFF predictor 2', !!rpred.image && rpred.parsed.pixels.predictor === 2 && rpred.image.channels.R[85] === 255);
+  const multi = fs.readFileSync(path.join(__dirname, 'fixtures', 'multistrip.tif'));
+  const rm = M.auditTIFF(multi, 'multistrip.tif');
+  check('TIFF 40 条带全部解码', !!rm.image && rm.parsed.pixels.strips === 40 && rm.image.channels.R[39 * 4] === (39 * 3) % 256,
+    rm.image ? JSON.stringify({ strips: rm.parsed.pixels.strips, row39: rm.image.channels.R[39 * 4] }) : 'no image');
+  const gp = fs.readFileSync(path.join(__dirname, 'fixtures', 'g16pred.tif'));
+  const rgp = M.auditTIFF(gp, 'g16pred.tif');
+  check('TIFF 16 位 predictor 2', !!rgp.image && rgp.parsed.pixels.predictor === 2 && rgp.parsed.pixels.bits === 16 && rgp.image.channels.R[85] === 0x12,
+    rgp.image ? String(rgp.image.channels.R[85]) : 'no image');
   const an = M.analyze(lzw, 'lzw.tif', {});
   check('TIFF 进入图像扫描链', findingText(an).indexOf('flag{tiff_tail}') >= 0, findingText(an).slice(0, 160));
 }
@@ -1344,6 +1352,10 @@ console.log('\n== PCX ==');
   check('PCX 尾部被捞出', r.findings.some(f => f.type === 'pcx_trailer'), JSON.stringify(r.findings.map(f => f.type)));
   const an = M.analyze(pcx, 'tiny.pcx', {});
   check('PCX 进入分析链', findingText(an).indexOf('flag{pcx_tail}') >= 0, findingText(an).slice(0, 160));
+  const v3 = fs.readFileSync(path.join(__dirname, 'fixtures', 'v3.pcx'));
+  const d3 = M.decodePCX(v3);
+  check('PCX v3 1bpp 也能识别和解码', M.detectType(v3, 'x.pcx').format === 'PCX' && !d3.error && d3.channels.R[0] === 255 && d3.channels.R[8] === 0,
+    JSON.stringify({ fmt: M.detectType(v3, 'x.pcx').format, r0: d3.channels && d3.channels.R[0] }));
 }
 console.log('\n== Java class ==');
 {
@@ -1370,6 +1382,16 @@ console.log('\n== MP4 ==');
     && (r.artifacts || []).some(a => a.name === 'mp4-trailer.bin'), JSON.stringify(r.findings.map(f => f.type)));
   const an = M.analyze(m, 'clip.mp4', {});
   check('MP4 进入分析链', findingText(an).indexOf('flag{mp4_meta}') >= 0 && findingText(an).indexOf('flag{mp4_free}') >= 0, findingText(an).slice(0, 160));
+  const mbox = (t, payload) => { const h = Buffer.alloc(8); h.writeUInt32BE(8 + payload.length, 0); h.write(t, 4, 'latin1'); return Buffer.concat([h, payload]); };
+  let deep = Buffer.from('x');
+  for (let k = 0; k < 40000; k++) deep = mbox('moov', deep);
+  const rDeep = M.auditMP4(deep, 'deep.mp4');
+  check('MP4 深嵌套不炸栈', rDeep.findings.some(f => f.type === 'mp4_limit'), rDeep.findings.map(f => f.type).join(','));
+  check('MP4 元数据标签名可读', r.parsed.meta.some(x => x.label === 'title') && r.parsed.meta.some(x => x.label === 'comment'), JSON.stringify(r.parsed.meta.map(x => x.label)));
+  const ftypSize = m.readUInt32BE(0);
+  const noFtyp = m.subarray(ftypSize);
+  check('无 ftyp 的 MOV 也能识别', M.detectType(noFtyp, 'x.mov').format === 'MP4' && M.auditMP4(noFtyp, 'x.mov').parsed.meta.length === 2,
+    M.detectType(noFtyp, 'x.mov').format);
 }
 console.log('\n== ISO9660 ==');
 {
@@ -1385,6 +1407,12 @@ console.log('\n== ISO9660 ==');
     JSON.stringify({ arts: (r.artifacts || []).map(a => a.name), types: r.findings.map(f => f.type) }));
   const an = M.analyze(iso, 'flagdisk.iso', {});
   check('ISO 进入分析链', findingText(an).indexOf('flag{iso9660_file}') >= 0, findingText(an).slice(0, 160));
+  const wrapped = zlib.deflateSync(iso);
+  const rw = M.analyze(wrapped, 'wrapped.bin', {});
+  check('解压出的 ISO 会被识别并递归', findingText(rw).indexOf('flag{iso9660_file}') >= 0, findingText(rw).slice(0, 160));
+  const badIso = Buffer.from(iso);
+  badIso.writeUInt32BE(999, 16 * 2048 + 156 + 6);
+  check('ISO LE/BE 副本不一致被点名', M.auditISO(badIso, 'bad.iso').findings.some(f => f.type === 'iso_be'));
 }
 console.log('\n== Unicode 不可见字符 ==');
 {

@@ -957,6 +957,38 @@ def fixture_tiff_pal4():
     return body
 
 
+def fixture_tiff_multistrip():
+    from PIL import Image
+    im = Image.new("RGB", (4, 40), (0, 0, 0))
+    for y in range(40):
+        im.putpixel((0, y), (y * 3 % 256, 0, 0))
+    return _tiff_save(im, compression="raw", tiffinfo={278: 1})
+
+
+def fixture_tiff_gray16_pred():
+    from PIL import Image
+    im = Image.new("I;16", (16, 16))
+    im.putpixel((5, 5), 0x1234)
+    return _tiff_save(im, compression="tiff_lzw", tiffinfo={317: 2})
+
+
+def fixture_pcx_v3():
+    w = h = 16
+    hdr = bytearray(128)
+    hdr[0], hdr[1], hdr[2], hdr[3] = 0x0A, 3, 1, 1
+    hdr[8:10] = struct.pack("<H", w - 1)
+    hdr[10:12] = struct.pack("<H", h - 1)
+    hdr[12:14] = struct.pack("<H", 72)
+    hdr[14:16] = struct.pack("<H", 72)
+    hdr[16:19] = bytes([0, 0, 0])
+    hdr[19:22] = bytes([255, 255, 255])
+    hdr[65] = 1
+    hdr[66:68] = struct.pack("<H", 2)
+    hdr[68:70] = struct.pack("<H", 1)
+    data = bytes([0xC1, 255, 0xC1, 0]) * h
+    return bytes(hdr) + data
+
+
 def fixture_pcx():
     w = h = 16
     hdr = bytearray(128)
@@ -1727,6 +1759,7 @@ FIXTURES = [
     ("clip.mp4", fixture_mp4, ["MP4 ftyp", "flag{mp4_meta}", "flag{mp4_comment}", "flag{mp4_free}", "flag{mp4_tail}"]),
     ("Hello.class", fixture_java_class, ["Java class", "flag{java_cp}"]),
     ("tiny.pcx", fixture_pcx, ["PCX 16 × 16", "flag{pcx_tail}"]),
+    ("v3.pcx", fixture_pcx_v3, ["PCX 16 × 16"]),
     ("lzw.tif", fixture_tiff_lzw, ["TIFF", "LZW", "flag{tiff_tail}"]),
     ("packbits.tif", fixture_tiff_packbits, ["TIFF", "PackBits"]),
     ("lzw.pdf", fixture_pdf_lzw, ["PDF 内嵌文件", "flag{pdf_lzw_stream}"]),
@@ -1735,6 +1768,8 @@ FIXTURES = [
     ("palette.tif", fixture_tiff_palette, ["TIFF", "像素"]),
     ("pred2.tif", fixture_tiff_pred2, ["TIFF", "predictor 2"]),
     ("pal4.tif", fixture_tiff_pal4, ["TIFF", "像素"]),
+    ("multistrip.tif", fixture_tiff_multistrip, ["TIFF", "像素"]),
+    ("g16pred.tif", fixture_tiff_gray16_pred, ["TIFF", "predictor 2"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),

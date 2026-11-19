@@ -397,10 +397,13 @@
     if (len < 34 || off + len > end || off + len > b.length) return null;
     const nameLen = b[off + 32];
     if (33 + nameLen > len) return null;
+    const lbaLE = le32(b, off + 2), lbaBE = be32(b, off + 6);
+    const sizeLE = le32(b, off + 10), sizeBE = be32(b, off + 14);
     return {
       len,
-      lba: le32(b, off + 2) + b[off + 1],
-      size: le32(b, off + 10),
+      lba: lbaLE + b[off + 1],
+      size: sizeLE,
+      beMismatch: lbaLE !== lbaBE || sizeLE !== sizeBE,
       flags: b[off + 25],
       nameBytes: b.subarray(off + 33, off + 33 + nameLen)
     };
@@ -434,6 +437,7 @@
       if (len < 34 || p + len > end) { state.broken = true; break; }
       const rec = isoRecord(b, p, end);
       if (!rec) { state.broken = true; break; }
+      if (rec.beMismatch) state.beMismatch = (state.beMismatch || 0) + 1;
       const nm = isoName(rec, joliet);
       if (nm && nm !== '.' && nm !== '..') {
         const path = prefix ? prefix + '/' + nm : nm;
@@ -466,7 +470,7 @@
     const root = isoRecord(b, rootOff, rootOff + 4096);
     if (!root) return { findings: [finding('L0', 'format', 'ISO 根目录记录无效')], artifacts, image: null };
     const files = [];
-    const walkState = { truncated: false, broken: false };
+    const walkState = { truncated: false, broken: false, beMismatch: root.beMismatch ? 1 : 0 };
     isoWalk(b, blockSize, root.lba, root.size, '', files, 0, new Set(), joliet, walkState);
     findings.push(finding('L1', 'iso', `ISO9660 · ${volId || '(无卷标)'} · ${blockSize} 字节/块 · ${volBlocks} 块 · ${files.length} 个文件`, {
       confidence: 0.95, offset: 16 * 2048,
@@ -475,6 +479,12 @@
       detail: `System ID: ${sysId || '(空)'}；主卷描述符 @ 0x${hex(pvd)}${svd >= 0 ? '，补充卷 @ 0x' + hex(svd) : ''}`,
       recipe: '7z l image.iso / isoinfo -l -i image.iso'
     }));
+    if (walkState.beMismatch) {
+      findings.push(finding('L1', 'iso_be', `${walkState.beMismatch} 条目录记录的 LE/BE 副本不一致`, {
+        confidence: 0.85, actual: '两个本应相同的字段被改成不同值',
+        detail: 'ISO 的 extent/size 字段大小端各存一份；不一致通常意味着有人手工改过，按 LE 读到的位置可能不是真数据。'
+      }));
+    }
     if (walkState.truncated || walkState.broken) {
       findings.push(finding('L1', 'iso_limit', '目录树没有完整列完', {
         confidence: 0.6,
@@ -533,6 +543,10 @@
   const MP4_CONTAINERS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl', 'udta', 'meta', 'edts', 'dinf', 'mvex', 'moof', 'traf', 'mfra']);
   const MP4_NAMES = { '©nam': 'title', '©cmt': 'comment', '©too': 'encoder', '©day': 'date', '©ART': 'artist', '©alb': 'album', '©gen': 'genre', desc: 'description', '----': 'custom' };
 
+  function mp4Type(b, off) {
+    return b[off] === 0xA9 ? '©' + ascii(b.subarray(off + 1, off + 4), 3) : ascii(b.subarray(off, off + 4), 4);
+  }
+
   function auditMP4(input, name) {
     const b = toU8(input);
     const findings = [], artifacts = [];
@@ -551,7 +565,7 @@
       while (p + 8 <= end) {
         if (boxes.length >= 5000) { truncated = true; break; }
         let size = be32(b, p);
-        const type = ascii(b.subarray(p + 4, p + 8), 4);
+        const type = mp4Type(b, p + 4);
         let header = 8;
         if (size === 1) {
           if (p + 16 > end) break;
@@ -609,7 +623,7 @@
           let ip = body;
           while (ip + 8 <= bodyEnd) {
             const isize = be32(b, ip);
-            const itype = ascii(b.subarray(ip + 4, ip + 8), 4);
+            const itype = mp4Type(b, ip + 4);
             if (isize < 8 || ip + isize > bodyEnd) break;
             let dp = ip + 8;
             while (dp + 8 <= ip + isize) {
