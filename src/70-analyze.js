@@ -192,6 +192,7 @@
       case '7Z': return MDZ.audit7Z(bytes, name, opts);
       case 'BZIP2': return MDZ.auditBzip2(bytes, name, opts);
       case 'TGA': return MDZ.auditTGA(bytes, name, opts);
+      case 'PSD': return MDZ.auditPSD(bytes, name, opts);
       case 'LNK': return MDZ.auditLNK(bytes, name, opts);
       case 'OLE': return MDZ.auditOLE(bytes, name, opts);
       case 'PCAP': return MDZ.auditPCAP(bytes, name, opts);

@@ -1296,6 +1296,26 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== PSD ==');
+{
+  const p = fs.readFileSync(path.join(__dirname, 'fixtures', 'layered.psd'));
+  check('PSD 类型识别', M.detectType(p, 'x.psd').format === 'PSD', M.detectType(p, 'x.psd').format);
+  const parsed = M.parsePSD(p);
+  check('PSD 图层名与隐藏标记', !parsed.error && parsed.layers.length === 2 && parsed.layers[1].visible === false
+    && parsed.layers[1].name.indexOf('flag{psd_hidden_layer}') >= 0,
+    JSON.stringify((parsed.layers || []).map(l => ({ n: l.name, v: l.visible }))));
+  const r = M.auditPSD(p, 'x.psd');
+  const ch = r.image && r.image.channels;
+  check('PSD 合成图像素正确', !!ch && r.image.width === 16 && ch.R[5 + 5 * 16] === 80 && ch.G[5 + 5 * 16] === 80 && ch.B[0] === 0x40,
+    ch ? JSON.stringify({ r: ch.R[85], g: ch.G[85], b: ch.B[0] }) : 'no image');
+  check('PSD 解出隐藏图层预览', (r.images || []).length === 2 && r.images.some(x => x.name.indexOf('隐藏') >= 0),
+    JSON.stringify((r.images || []).map(x => x.name)));
+  check('PSD 导出隐藏层 BMP', (r.artifacts || []).some(a => /^psd-hidden-/.test(a.name)), JSON.stringify((r.artifacts || []).map(a => a.name)));
+  const tail = (r.findings || []).find(f => f.type === 'psd_trailer');
+  check('PSD 合成图尾部被检出', !!tail && tail.title.indexOf('合成图像') >= 0, JSON.stringify((r.findings || []).map(f => f.title)));
+  const txt = findingText(M.analyze(p, 'layered.psd', {}));
+  check('PSD 进入分析链并捞出 flag', txt.indexOf('flag{psd_hidden_layer}') >= 0 && txt.indexOf('flag{psd_tail}') >= 0, txt.slice(0, 200));
+}
 console.log('\n== 编码工具箱 ==');
 {
   const rt = (label, op, text, encOp, opts) => {

@@ -624,6 +624,67 @@ def fixture_bzip2():
     return bz2.compress(b"flag{bzip2_layers} " + b"padding " * 64, 9)
 
 
+def _psd_packbits(data):
+    out = bytearray()
+    i = 0
+    while i < len(data):
+        n = min(128, len(data) - i)
+        out.append(n - 1)
+        out += data[i:i + n]
+        i += n
+    return bytes(out)
+
+
+def _psd_rle_channel(rows):
+    packed = [_psd_packbits(r) for r in rows]
+    return struct.pack(">H", 1) + b"".join(struct.pack(">H", len(p)) for p in packed) + b"".join(packed)
+
+
+def _psd_pascal4(name):
+    raw = bytes([len(name)]) + name.encode("latin1")
+    return raw + b"\x00" * ((-len(raw)) % 4)
+
+
+def _psd_layer(name, rows, visible, w=16, h=16):
+    # 三个通道同数据即可；通道数据统一追加在全部图层记录之后
+    data = b"".join(_psd_rle_channel(rows) for _ in range(3))
+    rec = struct.pack(">iiii", 0, 0, h, w) + struct.pack(">H", 3)
+    for c in range(3):
+        rec += struct.pack(">hI", c, len(data) // 3)
+    rec += b"8BIMnorm" + bytes([255, 0, 0x08 | (0 if visible else 0x02), 0])
+    u = name.encode("utf-16-be")
+    extra = struct.pack(">I", 0) + struct.pack(">I", 0) + _psd_pascal4(name)
+    extra += b"8BIMluni" + struct.pack(">I", len(u) + 4) + struct.pack(">I", len(u)) + u
+    rec += struct.pack(">I", len(extra)) + extra
+    return rec, data
+
+
+def fixture_psd():
+    w = h = 16
+    vis = [bytes(((x * 16) & 255) for x in range(w)) for _ in range(h)]
+    hid = [bytes((255 if x == y else 0) for x in range(w)) for y in range(h)]
+    rec1, data1 = _psd_layer("background", vis, True, w, h)
+    rec2, data2 = _psd_layer("flag{psd_hidden_layer}", hid, False, w, h)
+    layer_info = struct.pack(">h", 2) + rec1 + rec2 + data1 + data2
+    layer_mask = struct.pack(">I", len(layer_info)) + layer_info + struct.pack(">I", 0)
+
+    comp_rows = []
+    for c in range(3):
+        for y in range(h):
+            if c == 0:
+                comp_rows.append(bytes(((x * 16) & 255) for x in range(w)))
+            elif c == 1:
+                comp_rows.append(bytes((y * 16) & 255 for _ in range(w)))
+            else:
+                comp_rows.append(bytes([0x40] * w))
+    packed = [_psd_packbits(r) for r in comp_rows]
+    comp = struct.pack(">H", 1) + b"".join(struct.pack(">H", len(p)) for p in packed) + b"".join(packed)
+
+    res = b"8BIM" + struct.pack(">H", 1000) + b"\x00\x00" + struct.pack(">I", 16) + b"Adobe Photoshop\x00"
+    hdr = b"8BPS" + struct.pack(">H", 1) + b"\x00" * 6 + struct.pack(">HIIHH", 3, h, w, 8, 3)
+    return hdr + struct.pack(">I", 0) + struct.pack(">I", len(res)) + res + struct.pack(">I", len(layer_mask)) + layer_mask + comp + b"flag{psd_tail}"
+
+
 def fixture_bzip2_two():
     import bz2
     return bz2.compress(b"flag{first_bz2}", 9) + bz2.compress(b"flag{second_bz2}", 9)
@@ -1296,6 +1357,7 @@ FIXTURES = [
     ("gif_interlaced.gif", fixture_gif_interlaced, ["隔行", "flag{gif_interlace}"]),
     ("zip_plain.zip", fixture_zip_plain, ["ZIP 条目", "flag{zip_entry}"]),
     ("bzip2_text.bz2", fixture_bzip2, ["bzip2 解压", "flag{bzip2_layers}"]),
+    ("layered.psd", fixture_psd, ["PSD 16 × 16", "隐藏图层", "flag{psd_hidden_layer}", "flag{psd_tail}"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),

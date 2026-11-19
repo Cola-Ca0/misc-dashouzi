@@ -8,6 +8,9 @@
 
   function le16(b, o) { return b[o] | (b[o + 1] << 8); }
   function le32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+  // PSD 等大端格式用
+  function rd16(b, o) { return (b[o] << 8) | b[o + 1]; }
+  function rd32(b, o) { return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0; }
   // 文件大小远在 2^53 以内，用 double 拼 64 位即可
   function le64(b, o) { return le32(b, o) + le32(b, o + 4) * 0x100000000; }
 
@@ -1033,12 +1036,383 @@
     return { findings, artifacts, image: dec.error ? null : dec, info, parsed: { info, consumed: dec.consumed } };
   }
 
+  // ---------- PSD ----------
+  // 头部 + 色彩模式数据 + 图像资源 + 图层与蒙版 + 合成图像。
+  // CTF 看点：隐藏图层、图层名、资源段字符串、合成图之后的夹带。
+  const PSD_MODE = { 0: '位图', 1: '灰度', 2: '索引', 3: 'RGB', 4: 'CMYK', 7: '多通道', 8: '双色调', 9: 'Lab' };
+
+  function psdUtf16be(b, o, n) {
+    let s = '';
+    for (let i = 0; i + 1 < n; i += 2) s += String.fromCharCode((b[o + i] << 8) | b[o + i + 1]);
+    return s;
+  }
+
+  function psdPackBits(src, off, count, out, outOff, rowLen) {
+    let i = off, end = Math.min(off + count, src.length), o = outOff;
+    const stop = outOff + rowLen;
+    while (i < end && o < stop) {
+      const n = (src[i++] << 24) >> 24;
+      if (n >= 0) {
+        const take = Math.min(n + 1, end - i, stop - o);
+        for (let k = 0; k < take; k++) out[o++] = src[i + k];
+        i += n + 1;
+      } else if (n !== -128) {
+        if (i >= end) break;
+        const v = src[i++];
+        const take = Math.min(1 - n, stop - o);
+        for (let k = 0; k < take; k++) out[o++] = v;
+      }
+    }
+    return o - outOff;
+  }
+
+  function psdSample(decoded, w, h, depth) {
+    const n = w * h;
+    if (!decoded || decoded.length < n) return null;
+    if (depth <= 8) return decoded.subarray(0, n);
+    if (depth === 16) {
+      if (decoded.length < n * 2) return null;
+      const out = new Uint8Array(n);
+      for (let i = 0; i < n; i++) out[i] = decoded[i * 2];
+      return out;
+    }
+    return null;
+  }
+
+  function psdImage(w, h, mode, decoded, palette) {
+    const n = w * h;
+    if (!(w > 0) || !(h > 0) || n > 6e6 || mode === 0) return null;
+    const R = new Uint8Array(n), G = new Uint8Array(n), B = new Uint8Array(n), A = new Uint8Array(n).fill(255);
+    const gray = decoded[0];
+    if (mode === 2) {
+      if (!gray || !palette || palette.length < 3) return null;
+      for (let i = 0; i < n; i++) {
+        const idx = gray[i];
+        R[i] = palette[idx * 3] || 0; G[i] = palette[idx * 3 + 1] || 0; B[i] = palette[idx * 3 + 2] || 0;
+      }
+    } else if (mode === 4) {
+      const C = decoded[0], M = decoded[1], Y = decoded[2], K = decoded[3];
+      if (!C || !M || !Y || !K) return null;
+      for (let i = 0; i < n; i++) {
+        R[i] = 255 - Math.min(255, C[i] + K[i]);
+        G[i] = 255 - Math.min(255, M[i] + K[i]);
+        B[i] = 255 - Math.min(255, Y[i] + K[i]);
+      }
+    } else if (gray && !decoded[1]) {
+      for (let i = 0; i < n; i++) { R[i] = G[i] = B[i] = gray[i]; }
+    } else {
+      if (!decoded[0] || !decoded[1] || !decoded[2]) return null;
+      R.set(decoded[0]); G.set(decoded[1]); B.set(decoded[2]);
+    }
+    if (decoded[-1]) A.set(decoded[-1]);
+    return { width: w, height: h, bitDepth: 8, colorType: 'PSD', channels: { R, G, B, A }, error: null };
+  }
+
+  function psdDecodeChannel(b, ch, w, h, depth, psb) {
+    const n = w * h;
+    const bp = depth >= 16 ? 2 : 1;
+    const rawLen = n * bp;
+    const out = new Uint8Array(rawLen);
+    const start = ch.offset, end = ch.dataEnd;
+    if (start === undefined || end <= start) return { out: null, error: '通道数据为空' };
+    if (ch.compression === 0) {
+      out.set(b.subarray(start, Math.min(start + rawLen, end)));
+      return { out, error: end - start < rawLen ? '通道数据被截断' : null };
+    }
+    if (ch.compression === 1) {
+      const cntLen = psb ? 4 : 2;
+      const tableLen = h * cntLen;
+      if (start + tableLen > end) return { out: null, error: 'RLE 行表越界' };
+      const counts = [];
+      let off = start + tableLen;
+      for (let y = 0; y < h; y++) {
+        const c = cntLen === 2 ? rd16(b, start + y * 2) : rd32(b, start + y * 4);
+        counts.push(c);
+      }
+      for (let y = 0; y < h; y++) {
+        psdPackBits(b, off, counts[y], out, y * w * bp, w * bp);
+        off += counts[y];
+      }
+      return { out, error: null };
+    }
+    if (ch.compression === 2 || ch.compression === 3) {
+      const z = MDZ.inflateZlib(b.subarray(start, end), 0, Math.max(rawLen * 4, 1 << 20));
+      if (!z.out) return { out: null, error: 'ZIP 通道解压失败' };
+      if (ch.compression === 3) {
+        // 16/32 位 ZIP 预测：行内后一字节是前一字节的差分
+        const buf = z.out;
+        const rowBytes = w * bp;
+        for (let y = 0; y < h; y++) {
+          const base = y * rowBytes;
+          for (let i = 1; i < rowBytes && base + i < buf.length; i++) buf[base + i] = (buf[base + i] + buf[base + i - 1]) & 255;
+        }
+      }
+      out.set(z.out.subarray(0, rawLen));
+      return { out, error: null };
+    }
+    return { out: null, error: '压缩方式 ' + ch.compression + ' 不支持' };
+  }
+
+  function parsePSD(input) {
+    const b = toU8(input);
+    if (b.length < 26) return { error: '不足 26 字节' };
+    if (ascii(b.subarray(0, 4), 4) !== '8BPS') return { error: '缺少 8BPS 签名' };
+    const version = rd16(b, 4);
+    if (version !== 1 && version !== 2) return { error: '版本 ' + version + ' 不支持' };
+    const psb = version === 2;
+    const info = {
+      version, psb, channels: rd16(b, 12), height: rd32(b, 14), width: rd32(b, 18),
+      depth: rd16(b, 22), mode: rd16(b, 24)
+    };
+    info.modeName = PSD_MODE[info.mode] || ('#' + info.mode);
+    if (!info.width || !info.height) return { error: '宽高为 0' };
+    if (info.width * info.height > 268435456) return { error: '尺寸异常：' + info.width + '×' + info.height };
+    let p = 26;
+    if (p + 4 > b.length) return { error: '头部之后被截断' };
+    const colorLen = rd32(b, p); p += 4;
+    info.palette = b.subarray(p, Math.min(p + colorLen, b.length)).subarray(0, 768);
+    p += colorLen;
+    if (p + 4 > b.length) return { error: '色彩模式数据越界' };
+    const resLen = rd32(b, p); p += 4;
+    info.resourceLen = Math.min(resLen, Math.max(0, b.length - p));
+    info.resources = b.subarray(p, p + info.resourceLen);
+    p += resLen;
+    if (p + 4 > b.length) return { error: '图像资源段越界' };
+    const lmLen = rd32(b, p); p += 4;
+    const lmEnd = Math.min(p + lmLen, b.length);
+    const layers = [];
+    info.layers = layers;
+    info.mergedAlpha = false;
+    if (p + 4 <= lmEnd) {
+      const liLen = rd32(b, p); p += 4;
+      const liEnd = Math.min(p + liLen, lmEnd);
+      if (p + 2 <= liEnd) {
+        const raw = (rd16(b, p) << 16) >> 16; p += 2;
+        info.mergedAlpha = raw < 0;
+        const count = Math.min(Math.abs(raw), 512);
+        for (let i = 0; i < count; i++) {
+          if (p + 34 > liEnd) break;
+          const top = rd32(b, p) | 0, left = rd32(b, p + 4) | 0, bottom = rd32(b, p + 8) | 0, right = rd32(b, p + 12) | 0;
+          p += 16;
+          const w = right - left, h = bottom - top;
+          const nch = rd16(b, p); p += 2;
+          const chans = [];
+          for (let c = 0; c < nch && p + 6 <= liEnd; c++) {
+            const id = (rd16(b, p) << 16) >> 16; p += 2;
+            let len;
+            if (psb) { const hi = rd32(b, p); len = hi ? -1 : rd32(b, p + 4); p += 8; }
+            else { len = rd32(b, p); p += 4; }
+            chans.push({ id, len });
+          }
+          if (p + 12 > liEnd) break;
+          p += 4;   // '8BIM'
+          const blend = ascii(b.subarray(p, p + 4), 4).replace(/\0/g, ''); p += 4;
+          const opacity = b[p];
+          const flags = b[p + 2];
+          p += 4;
+          const extraLen = rd32(b, p); p += 4;
+          const extraEnd = Math.min(p + extraLen, liEnd);
+          if (p + 4 <= extraEnd) { const ml = rd32(b, p); p += 4 + Math.min(ml, extraEnd - p - 4); }
+          if (p + 4 <= extraEnd) { const bl = rd32(b, p); p += 4 + Math.min(bl, extraEnd - p - 4); }
+          let name = '', section = 0, hasText = false;
+          if (p < extraEnd) {
+            const nameStart = p;
+            const sl = b[p];
+            name = ascii(b.subarray(p + 1, Math.min(p + 1 + sl, extraEnd)), sl);
+            p = nameStart + Math.ceil((1 + sl) / 4) * 4;
+          }
+          let guard = 0;
+          while (p + 12 <= extraEnd && guard++ < 128) {
+            const sig = ascii(b.subarray(p, p + 4), 4);
+            if (sig !== '8BIM' && sig !== '8B64') break;
+            const key = ascii(b.subarray(p + 4, p + 8), 4);
+            let dl;
+            if (psb) { const hi = rd32(b, p + 8); dl = hi ? -1 : rd32(b, p + 12); p += 16; }
+            else { dl = rd32(b, p + 8); p += 12; }
+            if (!(dl >= 0) || p + dl > extraEnd) break;
+            if (key === 'luni' && dl >= 4) {
+              const n2 = rd32(b, p);
+              if (n2 >= 2 && n2 <= dl && p + 4 + n2 <= extraEnd) name = psdUtf16be(b, p + 4, n2);
+            } else if (key === 'lsct' && dl >= 4) {
+              section = rd32(b, p);
+            } else if (key === 'TySh') {
+              hasText = true;
+            }
+            p += dl;
+            if (dl & 1) p += 1;
+          }
+          p = extraEnd;
+          layers.push({
+            index: layers.length, name: name || ('图层 ' + (layers.length + 1)),
+            rect: { top, left, bottom, right }, w, h, chans, blend, opacity, flags,
+            visible: !(flags & 0x02), section, hasText, decoded: {}
+          });
+        }
+        // 通道数据区紧跟在所有图层记录之后；记录里的长度含 2 字节压缩标记
+        for (const layer of layers) {
+          for (const ch of layer.chans) {
+            if (p + 2 > liEnd || !(ch.len >= 0)) { ch.skip = true; continue; }
+            const compOff = p;
+            ch.compression = rd16(b, p); p += 2;
+            ch.offset = p;
+            ch.dataEnd = Math.min(compOff + ch.len, liEnd, b.length);
+            p = Math.min(compOff + ch.len, b.length);
+            if (p > liEnd) break;
+          }
+          if (p > liEnd) break;
+        }
+      }
+      p = liEnd;
+    }
+    // 全局图层蒙版 / Lr16 / Lr32 块都在合成图之前，直接从蒙版段末尾跳到合成图
+    info.compStart = lmEnd;
+    return { info, layers, error: null };
+  }
+
+  function psdDecodeComposite(b, info) {
+    const w = info.width, h = info.height, nch = info.channels, depth = info.depth, psb = info.psb;
+    const n = w * h;
+    const bp = depth >= 16 ? 2 : 1;
+    let p = info.compStart;
+    if (!(p > 0) || p + 2 > b.length) return { image: null, end: null };
+    if (nch < 1 || nch > 56 || n <= 0 || n > 6e6 || depth > 16) return { image: null, end: null };
+    const compression = rd16(b, p); p += 2;
+    const planes = [];
+    if (compression === 0) {
+      for (let c = 0; c < nch; c++) {
+        planes.push(b.subarray(p, p + n * bp));
+        p += n * bp;
+        if (p > b.length) break;
+      }
+    } else if (compression === 1) {
+      const cntLen = psb ? 4 : 2;
+      const tableLen = h * nch * cntLen;
+      if (p + tableLen > b.length) return { image: null, end: null };
+      const counts = [];
+      let total = 0;
+      for (let i = 0; i < h * nch; i++) {
+        const c = cntLen === 2 ? rd16(b, p + i * 2) : rd32(b, p + i * 4);
+        counts.push(c); total += c;
+      }
+      p += tableLen;
+      const dataStart = p;
+      const rowBytes = w * bp;
+      let off = dataStart;
+      for (let c = 0; c < nch; c++) {
+        const plane = new Uint8Array(n * bp);
+        for (let y = 0; y < h; y++) {
+          psdPackBits(b, off, counts[c * h + y], plane, y * rowBytes, rowBytes);
+          off += counts[c * h + y];
+        }
+        planes.push(plane);
+      }
+      p = dataStart + total;
+    } else {
+      return { image: null, end: null };
+    }
+    info.compression = compression;
+    const base = info.mode === 4 ? 4 : (info.mode === 1 || info.mode === 2 || info.mode === 0 || info.mode === 8 ? 1 : 3);
+    const decoded = {};
+    for (let i = 0; i < planes.length; i++) {
+      const s = psdSample(planes[i], w, h, depth);
+      if (!s) continue;
+      if (i < base) decoded[i] = s;
+      else if (i === base) decoded[-1] = s;
+    }
+    return { image: psdImage(w, h, info.mode, decoded, info.palette), end: Math.min(p, b.length) };
+  }
+
+  function auditPSD(input, name) {
+    const b = toU8(input);
+    const findings = [], artifacts = [];
+    const parsed = parsePSD(b);
+    if (parsed.error) return { findings: [finding('L0', 'format', '不是 PSD', { detail: parsed.error })], artifacts, image: null, parsed };
+    const info = parsed.info, layers = parsed.layers;
+    const images = [];
+    let hidden = 0;
+    for (const layer of layers) {
+      const px = layer.w * layer.h;
+      if (px > 0 && px <= 6e6 && info.depth <= 16) {
+        for (const ch of layer.chans) {
+          if (ch.skip || layer.decoded[ch.id]) continue;
+          const d = psdDecodeChannel(b, ch, layer.w, layer.h, info.depth, info.psb);
+          if (!d.out) continue;
+          const s = psdSample(d.out, layer.w, layer.h, info.depth);
+          if (s) layer.decoded[ch.id] = s;
+        }
+        layer.image = psdImage(layer.w, layer.h, info.mode, layer.decoded, info.palette);
+        if (layer.image && images.length < 16) {
+          images.push({ name: `层 ${layer.index + 1}${layer.visible ? '' : ' · 隐藏'} · ${layer.name}`, image: layer.image });
+        }
+      }
+      if (!layer.visible) hidden++;
+    }
+    findings.push(finding('L1', 'psd', `PSD ${info.width} × ${info.height} · ${info.depth} 位 · ${info.modeName} · ${layers.length} 图层`, {
+      confidence: 0.95, offset: 0,
+      declared: `v${info.version}${info.psb ? ' (PSB)' : ''} · ${info.channels} 个合成通道`,
+      actual: info.mergedAlpha ? '首通道含合并透明' : '无合并透明通道',
+      detail: `色彩模式数据 ${info.palette.length} 字节 · 图像资源 ${info.resourceLen} 字节`,
+      recipe: '8BPS 头之后依次是色彩模式数据、图像资源、图层与蒙版、合成图像'
+    }));
+    if (layers.length) {
+      findings.push(finding('L2', 'psd_layers', `图层 ${layers.length} 个${hidden ? '（' + hidden + ' 个隐藏）' : ''}`, {
+        confidence: hidden ? 0.95 : 0.6,
+        preview: layers.map(l => `#${l.index + 1} ${l.visible ? '可见' : '隐藏'} ${l.w}×${l.h} ${l.blend} ${Math.round(l.opacity / 255 * 100)}%${l.hasText ? ' [文本]' : ''} ${l.name}`).join('\n'),
+        actual: layers.slice(0, 6).map(l => l.name).join(' | ')
+      }));
+    }
+    if (hidden) {
+      findings.push(finding('L2', 'psd_hidden', `${hidden} 个隐藏图层：常见藏 flag 位置`, {
+        confidence: 0.9,
+        actual: layers.filter(l => !l.visible).map(l => l.name).join(' | '),
+        detail: '隐藏图层不会出现在合成图里；本工具已解出每层预览（右栏可切换），隐藏层还导出了 BMP。',
+        recipe: 'Photoshop 打开后取消隐藏；或直接看本工具的图层预览 / psd-hidden-*.bmp'
+      }));
+    }
+    let exported = 0;
+    for (const layer of layers) {
+      if (layer.visible || !layer.image || exported >= 4) continue;
+      const bmp = MDZ.encodeBMP ? MDZ.encodeBMP(layer.image) : null;
+      if (bmp) {
+        const nm = layer.name.replace(/[^\w.-]+/g, '_').slice(0, 32) || ('layer' + (layer.index + 1));
+        artifacts.push(artifact(`psd-hidden-${layer.index + 1}-${nm}.bmp`, bmp, '隐藏图层像素'));
+        exported++;
+      }
+    }
+    const resStr = MDZ.strings(info.resources, 8).filter(s => !/^\d+$/.test(s)).slice(0, 40);
+    if (resStr.length) {
+      findings.push(finding('L3', 'psd_resources', `图像资源段 ${resStr.length} 条文本`, {
+        confidence: 0.5,
+        preview: resStr.slice(0, 8).join('\n'),
+        detail: '资源段里常见 XMP、IPTC、作者、色板名；出题人有时把口令写在资源名里。'
+      }));
+    }
+    const names = layers.map(l => l.name).join('\n');
+    const fm = MDZ.flagMatch(names + '\n' + resStr.join('\n'));
+    if (fm) findings.push(finding('L3', 'psd_flag', `图层名/资源段出现 ${fm}`, { confidence: 0.99, actual: fm, preview: names.slice(0, 400) }));
+    const comp = psdDecodeComposite(b, info);
+    if (comp.end != null && comp.end < b.length) {
+      const tr = b.subarray(comp.end);
+      findings.push(finding('L1', 'psd_trailer', `合成图像之后还有 ${tr.length} 字节`, {
+        confidence: tr.some(x => x !== 0) ? 0.95 : 0.6,
+        offset: comp.end,
+        declared: `合成图像结束于 0x${hex(comp.end)}`,
+        actual: `文件到 0x${hex(b.length)}`,
+        detail: '声明之外的数据没人会读，常用于夹带。已导出为产物。',
+        preview: ascii(tr.subarray(0, 120), Math.min(120, tr.length))
+      }));
+      artifacts.push(artifact('psd-trailer.bin', tr, 'PSD 合成图之后的尾部数据'));
+    }
+    return { findings, artifacts, image: comp.image || null, images, info, parsed: { info, layers, end: comp.end } };
+  }
+
   Object.assign(MDZ, {
     isGIF, parseGIF, auditGIF, lzwDecode, deinterlaceGIF, gifFrameImage, editGIFDims,
     isICO, parseICO, auditICO,
     isSVG, auditSVG,
     isZIP, parseZIP, unzipEntry, auditZIP, b64decode,
     isTIFF, auditTIFF, isWEBP, auditWEBP,
-    parseTGA, decodeTGA, auditTGA
+    parseTGA, decodeTGA, auditTGA,
+    parsePSD, auditPSD, psdPackBits
   });
 })(typeof globalThis !== 'undefined' ? globalThis : this);
