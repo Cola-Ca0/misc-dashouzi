@@ -1392,6 +1392,25 @@ console.log('\n== MP4 ==');
   const noFtyp = m.subarray(ftypSize);
   check('无 ftyp 的 MOV 也能识别', M.detectType(noFtyp, 'x.mov').format === 'MP4' && M.auditMP4(noFtyp, 'x.mov').parsed.meta.length === 2,
     M.detectType(noFtyp, 'x.mov').format);
+  const mkBox = (t, payload, mode) => {
+    if (mode === 1) {
+      const h = Buffer.alloc(16); h.writeUInt32BE(1, 0); h.write(t, 4, 'latin1'); h.writeUInt32BE(16 + payload.length, 12);
+      return Buffer.concat([h, payload]);
+    }
+    const h = Buffer.alloc(8); h.writeUInt32BE(mode === 0 ? 0 : 8 + payload.length, 0); h.write(t, 4, 'latin1');
+    return Buffer.concat([h, payload]);
+  };
+  const mvhd1 = Buffer.alloc(32); mvhd1[0] = 1; mvhd1.writeUInt32BE(1000, 20); mvhd1.writeUInt32BE(9000, 28);
+  const f2 = Buffer.concat([
+    mkBox('ftyp', Buffer.from('isomiso2mp41', 'latin1')),
+    mkBox('moov', mkBox('mvhd', mvhd1)),
+    mkBox('free', Buffer.from('flag{mp4_large}', 'latin1'), 1),
+    mkBox('mdat', Buffer.alloc(4), 0),
+  ]);
+  const r2 = M.auditMP4(f2, 'v.mp4');
+  const t2 = r2.findings.map(f => (f.title || '') + ' ' + (f.actual || '')).join('\n');
+  check('MP4 size=1/size=0 与 mvhd v1', t2.indexOf('flag{mp4_large}') >= 0 && t2.indexOf('9.00 秒') >= 0,
+    t2.slice(0, 200));
 }
 console.log('\n== ISO9660 ==');
 {
