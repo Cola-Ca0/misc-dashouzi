@@ -817,6 +817,24 @@ def fixture_mp4():
     mdat = _mp4_box(b"mdat", b"\x00" * 32)
     return ftyp + moov + free + mdat + b"flag{mp4_tail}"
 
+def fixture_tiff_lzw():
+    from PIL import Image
+    im = Image.new("RGB", (16, 16), (0, 0, 0))
+    im.putpixel((5, 5), (255, 0, 0))
+    buf = io.BytesIO()
+    im.save(buf, format="TIFF", compression="tiff_lzw")
+    return buf.getvalue() + b"flag{tiff_tail}"
+
+
+def fixture_tiff_packbits():
+    from PIL import Image
+    im = Image.new("RGB", (16, 16), (0, 0, 0))
+    im.putpixel((5, 5), (255, 0, 0))
+    buf = io.BytesIO()
+    im.save(buf, format="TIFF", compression="packbits")
+    return buf.getvalue()
+
+
 def fixture_pcx():
     w = h = 16
     hdr = bytearray(128)
@@ -1587,6 +1605,8 @@ FIXTURES = [
     ("clip.mp4", fixture_mp4, ["MP4 ftyp", "flag{mp4_meta}", "flag{mp4_comment}", "flag{mp4_free}", "flag{mp4_tail}"]),
     ("Hello.class", fixture_java_class, ["Java class", "flag{java_cp}"]),
     ("tiny.pcx", fixture_pcx, ["PCX 16 × 16", "flag{pcx_tail}"]),
+    ("lzw.tif", fixture_tiff_lzw, ["TIFF", "LZW", "flag{tiff_tail}"]),
+    ("packbits.tif", fixture_tiff_packbits, ["TIFF", "PackBits"]),
     ("bzip2_two_streams.bz2", fixture_bzip2_two, ["bzip2", "flag{second_bz2}"]),
     ("tga_truecolor.tga", fixture_tga, ["TGA", "16 × 16"]),
     ("tga_rle.tga", fixture_tga_rle, ["TGA", "RLE"]),

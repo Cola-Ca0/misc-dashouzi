@@ -14,6 +14,7 @@
         '声明尺寸 ≠ 实际数据：PNG/BMP/JPEG/GIF 尺寸反推 + 一键修复',
         '画字检测、频域峰值、调色板隐写、双图对比、位平面查看器',
         'TGA（真彩/调色板/灰度 + RLE）、PSD（图层/隐藏层预览/合成图）、PCX（RLE/16/256 色）',
+        'TIFF 像素解码：无压缩/PackBits/LZW/Deflate、16 位、predictor 2，解出的图继续走 LSB 扫描',
         'Java class 常量池字符串与 flag；SQLite 行扫描；Git 松散对象与 packfile',
         '二维码识别（1–40 版、L/M/Q/H、数字/字母/字节/汉字）',
         '一维条码：EAN-13 / EAN-8 / Code128 / Code39（灰度扫描线 + 游程解码，正拍或竖拍都认）',

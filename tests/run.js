@@ -1296,6 +1296,21 @@ console.log('\n== OLE 复合文档 ==');
   const txt = findingText(M.analyze(o, 'compound.doc', {}));
   check('OLE 流里的 flag 被捞出', txt.indexOf('flag{ole_stream}') >= 0, txt.slice(0, 200));
 }
+console.log('\n== TIFF 像素 ==');
+{
+  const lzw = fs.readFileSync(path.join(__dirname, 'fixtures', 'lzw.tif'));
+  const r = M.auditTIFF(lzw, 'lzw.tif');
+  check('TIFF LZW 像素解码', !!r.image && r.image.width === 16 && r.image.channels.R[85] === 255
+    && r.image.channels.G[85] === 0 && r.image.channels.B[85] === 0,
+    r.image ? JSON.stringify({ r: r.image.channels.R[85], g: r.image.channels.G[85], b: r.image.channels.B[85] }) : 'no image');
+  check('TIFF 尾部可打印数据', r.findings.some(f => f.type === 'tiff_trailer'), JSON.stringify(r.findings.map(f => f.type)));
+  const pb = fs.readFileSync(path.join(__dirname, 'fixtures', 'packbits.tif'));
+  const rp = M.auditTIFF(pb, 'packbits.tif');
+  check('TIFF PackBits 像素解码', !!rp.image && rp.image.channels.R[85] === 255,
+    rp.image ? JSON.stringify({ r: rp.image.channels.R[85], meta: rp.parsed.pixels }) : (rp.findings.map(f => f.title).join(' | ')));
+  const an = M.analyze(lzw, 'lzw.tif', {});
+  check('TIFF 进入图像扫描链', findingText(an).indexOf('flag{tiff_tail}') >= 0, findingText(an).slice(0, 160));
+}
 console.log('\n== PCX ==');
 {
   const pcx = fs.readFileSync(path.join(__dirname, 'fixtures', 'tiny.pcx'));

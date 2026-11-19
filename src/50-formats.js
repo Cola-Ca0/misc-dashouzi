@@ -376,6 +376,173 @@
       (b[0] === 0x4D && b[1] === 0x4D && b[2] === 0x00 && b[3] === 0x2A));
   }
 
+  function tiffNums(t) {
+    if (!t) return null;
+    const v = Array.isArray(t.value) ? t.value : [t.value];
+    return v.map(x => typeof x === 'number' ? x : parseInt(x, 10)).filter(x => Number.isFinite(x));
+  }
+
+  function tiffPackBits(src, maxOut) {
+    const out = new Uint8Array(maxOut);
+    let i = 0, o = 0;
+    while (i < src.length && o < maxOut) {
+      const n = (src[i++] << 24) >> 24;
+      if (n >= 0) {
+        const take = Math.min(n + 1, src.length - i, maxOut - o);
+        out.set(src.subarray(i, i + take), o);
+        o += take; i += n + 1;
+      } else if (n !== -128) {
+        if (i >= src.length) break;
+        const v = src[i++];
+        const take = Math.min(1 - n, maxOut - o);
+        out.fill(v, o, o + take);
+        o += take;
+      }
+    }
+    return o ? out.subarray(0, o) : null;
+  }
+
+  function tiffLZW(src, maxOut) {
+    let bitPos = 0;
+    const readCode = (width) => {
+      let v = 0;
+      for (let i = 0; i < width; i++) {
+        const byte = src[bitPos >> 3];
+        if (byte === undefined) return -1;
+        v = (v << 1) | ((byte >> (7 - (bitPos & 7))) & 1);
+        bitPos++;
+      }
+      return v;
+    };
+    const out = [];
+    let width = 9, dict = [], next = 258, prev = null;
+    const reset = () => { dict = []; next = 258; width = 9; prev = null; };
+    reset();
+    while (out.length < maxOut) {
+      const code = readCode(width);
+      if (code < 0) break;
+      if (code === 256) { reset(); continue; }
+      if (code === 257) break;
+      let entry;
+      if (code < 258) entry = [code];
+      else if (code < next && dict[code - 258]) entry = dict[code - 258];
+      else if (code === next && prev) entry = prev.concat([prev[0]]);
+      else break;
+      for (const x of entry) if (out.length < maxOut) out.push(x);
+      if (prev && next < 4096) {
+        dict[next - 258] = prev.concat([entry[0]]);
+        next++;
+        if (next === (1 << width) - 1 && width < 12) width++;
+      }
+      prev = entry;
+    }
+    return out.length ? Uint8Array.from(out) : null;
+  }
+
+  // 基线 TIFF 像素：无压缩 / PackBits / LZW / Deflate，8/16 位，chunky 平面
+  function tiffDecode(b, tags, little) {
+    const get = id => tags.find(t => t.tag === id && t.ifd === 'IFD0');
+    const w = (tiffNums(get(0x0100)) || [0])[0];
+    const h = (tiffNums(get(0x0101)) || [0])[0];
+    if (!(w > 0) || !(h > 0) || w * h > 20e6) return { error: '尺寸无效' };
+    const compression = (tiffNums(get(0x0103)) || [1])[0];
+    const photo = (tiffNums(get(0x0106)) || [1])[0];
+    const spp = (tiffNums(get(0x0115)) || [1])[0];
+    const bits = (tiffNums(get(0x0102)) || [8])[0];
+    const planar = (tiffNums(get(0x011C)) || [1])[0];
+    const predictor = (tiffNums(get(0x013D)) || [1])[0];
+    const rowsPerStrip = (tiffNums(get(0x0116)) || [h])[0] || h;
+    const offsets = tiffNums(get(0x0111)) || [];
+    const counts = tiffNums(get(0x0117)) || [];
+    if (planar !== 1) return { error: '平面配置 2 暂不支持' };
+    if (!offsets.length || !counts.length) return { error: '缺少 strip offsets' };
+    if (![1, 4, 8, 16].includes(bits)) return { error: bits + ' 位样本暂不支持' };
+    const bytesPerSample = bits === 16 ? 2 : 1;
+    const rowBytes = Math.ceil(w * spp * bits / 8);
+    const raw = new Uint8Array(rowBytes * h);
+    let outRow = 0, maxEnd = 0;
+    for (let s = 0; s < offsets.length && outRow < h; s++) {
+      const off = offsets[s], len = counts[s];
+      if (!Number.isFinite(off) || !Number.isFinite(len) || off + len > b.length) continue;
+      maxEnd = Math.max(maxEnd, off + len);
+      const stripRows = Math.min(rowsPerStrip, h - outRow);
+      const need = stripRows * rowBytes;
+      let decoded;
+      if (compression === 1) decoded = b.subarray(off, off + Math.min(len, need));
+      else if (compression === 32773) decoded = tiffPackBits(b.subarray(off, off + len), need);
+      else if (compression === 5) decoded = tiffLZW(b.subarray(off, off + len), need);
+      else if (compression === 8 || compression === 32946) {
+        const z = MDZ.inflateZlib(b.subarray(off, off + len), 0, need);
+        decoded = z.out;
+      } else return { error: '压缩方式 ' + compression + ' 不支持', maxEnd };
+      if (!decoded) return { error: '条带解压失败', maxEnd };
+      if (predictor === 2 && bits === 8) {
+        for (let r = 0; r < stripRows; r++) {
+          const ro = r * rowBytes;
+          for (let i = spp; i < rowBytes; i++) decoded[ro + i] = (decoded[ro + i] + decoded[ro + i - spp]) & 255;
+        }
+      }
+      raw.set(decoded.subarray(0, need), outRow * rowBytes);
+      outRow += stripRows;
+    }
+    if (!outRow) return { error: '没有可解码的条带' };
+    const n = w * h;
+    const R = new Uint8Array(n), G = new Uint8Array(n), B = new Uint8Array(n), A = new Uint8Array(n).fill(255);
+    const sample = (x, y, c) => {
+      const base = y * rowBytes + x * spp * bytesPerSample + c * bytesPerSample;
+      if (base >= raw.length) return 0;
+      return bits === 16 ? raw[base + (little ? 1 : 0)] : raw[base];
+    };
+    let palette = null;
+    if (photo === 3) {
+      const cm = tiffNums(get(0x0140)) || [];
+      const size = 1 << bits;
+      if (cm.length >= size * 3) {
+        palette = new Uint8Array(size * 3);
+        for (let i = 0; i < size; i++) {
+          palette[i * 3] = (cm[i] >> 8) & 255;
+          palette[i * 3 + 1] = (cm[i + size] >> 8) & 255;
+          palette[i * 3 + 2] = (cm[i + 2 * size] >> 8) & 255;
+        }
+      }
+    }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (bits === 1 || bits === 4) {
+          const byte = raw[y * rowBytes + ((x * bits) >> 3)];
+          let v;
+          if (bits === 1) v = (byte >> (7 - (x & 7))) & 1;
+          else v = (x & 1) ? (byte & 15) : (byte >> 4);
+          if (photo === 0) v = (bits === 1 ? 1 - v : 15 - v);
+          const g = bits === 1 ? v * 255 : v * 17;
+          R[i] = G[i] = B[i] = g;
+        } else if (photo === 2) {
+          R[i] = sample(x, y, 0); G[i] = sample(x, y, 1); B[i] = sample(x, y, 2);
+          if (spp >= 4) A[i] = sample(x, y, 3);
+        } else if (photo === 3) {
+          const idx = sample(x, y, 0);
+          if (palette && idx * 3 + 2 < palette.length) {
+            R[i] = palette[idx * 3]; G[i] = palette[idx * 3 + 1]; B[i] = palette[idx * 3 + 2];
+          }
+        } else if (photo === 0 || photo === 1) {
+          let g = sample(x, y, 0);
+          if (photo === 0) g = 255 - g;
+          R[i] = G[i] = B[i] = g;
+        } else {
+          return { error: 'Photometric ' + photo + ' 暂不支持', maxEnd };
+        }
+      }
+    }
+    return {
+      image: { width: w, height: h, bitDepth: bits, colorType: 'TIFF', channels: { R, G, B, A }, error: null },
+      maxEnd,
+      meta: { compression, photo, spp, bits, predictor, rowsPerStrip, strips: offsets.length }
+    };
+  }
+
+  const TIFF_COMP = { 1: '无压缩', 5: 'LZW', 8: 'Deflate', 32773: 'PackBits', 32946: 'Deflate' };
+
   function auditTIFF(input, name) {
     const b = toU8(input);
     const findings = [], artifacts = [];
@@ -390,7 +557,7 @@
     const ifds = Array.from(new Set(tags.map(t => t.ifd)));
     findings.push(finding('L1', 'tiff_header', `TIFF（${ex.order}），${ifds.length} 个 IFD`, {
       confidence: 0.3, offset: 0, actual: ifds.join(' / '),
-      detail: '已解析 IFD/ExifIFD/GPS/IFD1；像素解码暂不做，重点看标签与内嵌缩略图。'
+      detail: '已解析 IFD/ExifIFD/GPS/IFD1；基线像素（无压缩/PackBits/LZW/Deflate）也会解码进扫描链。'
     }));
     const lines = [];
     let flagHit = null;
@@ -436,13 +603,40 @@
         }));
       }
     }
+    const px = tiffDecode(b, tags, ex.order === 'II');
+    let image = null;
+    if (px.image) {
+      image = px.image;
+      findings.push(finding('L1', 'tiff_pixels', `TIFF 像素 ${image.width} × ${image.height} · ${px.meta.bits} 位 · ${TIFF_COMP[px.meta.compression] || px.meta.compression}`, {
+        confidence: 0.85, offset: 0,
+        actual: `photometric ${px.meta.photo} · ${px.meta.spp} 样本/像素 · ${px.meta.strips} 条带${px.meta.predictor === 2 ? ' · predictor 2' : ''}`,
+        detail: '已解码为可扫描像素：位平面/LSB 会继续走后面的图像扫描链。'
+      }));
+    } else if (px.error) {
+      findings.push(finding('L1', 'tiff_pixels_skip', 'TIFF 像素未解码：' + px.error, { confidence: 0.7 }));
+    }
+    if (px.maxEnd && px.maxEnd < b.length) {
+      // IFD/标签值可能排在像素条带之后，所以从文件尾往前找连续可打印段
+      let ts = b.length;
+      while (ts > px.maxEnd && b[ts - 1] >= 32 && b[ts - 1] < 127) ts--;
+      if (b.length - ts >= 8) {
+        const tr = b.subarray(ts);
+        findings.push(finding('L1', 'tiff_trailer', `文件尾部 ${tr.length} 字节可打印数据`, {
+          confidence: 0.9, offset: ts,
+          declared: `像素条带结束于 0x${hex(px.maxEnd)}`,
+          actual: `可打印段从 0x${hex(ts)} 到文件尾`,
+          preview: ascii(tr.subarray(0, 120), Math.min(120, tr.length))
+        }));
+        artifacts.push(artifact('tiff-trailer.bin', tr, 'TIFF 文件尾部的可打印数据'));
+      }
+    }
     const hits = MDZ.strings(b, 6).filter(x => /flag|ctf|pass|key|secret/i.test(x));
     if (hits.length && !flagHit) {
       findings.push(finding('L3', 'strings', 'TIFF 原始字节命中可打印串', {
         confidence: 0.6, actual: hits.slice(0, 8).join(' | '), preview: hits.slice(0, 20).join('\n')
       }));
     }
-    return { findings, artifacts, image: null, parsed: { tags, order: ex.order } };
+    return { findings, artifacts, image, parsed: { tags, order: ex.order, pixels: px.meta || null } };
   }
 
   // ---------- WebP ----------
