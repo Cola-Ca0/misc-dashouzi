@@ -71,7 +71,7 @@
         '「编码工具」独立页：Base16/32/36/45/58/58Check/62/64/64URL/85/85(IPv6)/Z85/91/92/100、二/八/十进制、URL/HTML/QP/Unicode/UU、ROT13/47、Atbash、摩斯、培根、A1Z26，双向转换；自定义 Base 字母表；编码爆破（全部解码器 + ROT + 常见换表 + 多层链，按可读性/flag 排序）',
         '分析时发现常见编码会同时显示原文与自动解码结果，可直接转到编码页继续',
         '新格式：PSD（图层/隐藏层预览/合成图）、SQLite 行扫描、Git 松散对象与 packfile（OFS/REF delta）、FLAC 元数据、ISO9660、MP4/MOV、Java class、PCX、TIFF（PackBits/LZW/Deflate/predictor）、bzip2/TGA/LNK/OLE/DTMF',
-        '7Z 成员解压：LZMA/LZMA2、压缩头、Delta/x86 BCJ 过滤器，成员直接作为产物继续递归',
+        '7Z 成员解压：LZMA/LZMA2、压缩头、Delta/x86 BCJ 过滤器，成员直接作为产物继续递归；BCJ2 等多输入链与头部加密会明确点名',
         'Git REF_DELTA 按 SHA-1 索引回填，基底排在 delta 后面也能还原',
         'XZ/LZMA2 解压：多块、连接流、Delta、x86 BCJ、CRC32/CRC64/SHA-256 校验与尾部附加数据',
         'Mach-O：大小端 32/64 位、fat 与 fat_arch_64、段/节、入口、代码签名与 overlay',

@@ -213,6 +213,9 @@ console.log('\n== 归档 / PDF / MP3 ==');
   const deltaWant = Buffer.from('flag{7z_delta}'.repeat(20));
   check('7Z Delta 过滤器还原', szd.artifacts.some(a => a.name === 'data.bin' && Buffer.from(a.bytes).equals(deltaWant)),
     szd.findings.map(f => f.title).join(' | '));
+  const encHead = M.audit7Z(rd('seven_hdrenc.7z'), 'seven_hdrenc.7z');
+  check('7Z 头部加密被点名', encHead.findings.some(f => /头部已加密/.test(f.title)) && encHead.parsed.encryptedHeader,
+    encHead.findings.map(f => f.title).join(' | '));
   const szt = M.analyze(rd('seven_tree.7z'), 'seven_tree.7z', {});
   const ta = szt.artifacts.find(a => a.name === 'a.txt'), tb = szt.artifacts.find(a => a.name === 'b.txt');
   check('7Z 目录/空文件不偏移成员映射', !!ta && !!tb && Buffer.from(ta.bytes).toString('latin1').indexOf('flag{tree_a}') >= 0

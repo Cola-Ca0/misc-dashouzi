@@ -372,7 +372,7 @@
       defined = d.bits; p = d.next;
     }
     for (let i = 0; i < n; i++) if (defined[i]) { if (p + 4 > b.length) return null; p += 4; }
-    return { next: p };
+    return { next: p, defined };
   }
 
   function sevenFolder(b, p) {
@@ -431,6 +431,7 @@
     }
     if (id.length === 3 && id[0] === 0x03 && id[1] === 0x01 && id[2] === 0x01) return 'lzma1';
     if (id.length === 4 && id[0] === 0x03 && id[1] === 0x03 && id[2] === 0x01 && id[3] === 0x03) return 'bcj';
+    if (id.length === 4 && id[0] === 0x03 && id[1] === 0x03 && id[2] === 0x01 && id[3] === 0x1B) return 'bcj2';
     if (id.length === 4 && id[0] === 0x06 && id[1] === 0xF1 && id[2] === 0x07 && id[3] === 0x01) return 'aes';
     return 'other';
   }
@@ -487,8 +488,9 @@
         const t = b[p++];
         if (t === 0) break;
         if (t === 0x0A) {
-          const total = s.folders.reduce((a, f) => a + f.totalOut, 0);
-          const d = sevenDigests(b, p, total); if (!d) return null;
+          // UnpackInfo 的 CRC 数量是 folder 数，不是所有 coder 输出流数
+          const d = sevenDigests(b, p, s.folders.length); if (!d) return null;
+          for (let i = 0; i < s.folders.length; i++) s.folders[i].digestDefined = !!d.defined[i];
           p = d.next;
         } else return null;
       }
@@ -515,8 +517,13 @@
             }
           }
         } else if (t === 0x0A) {
-          const total = s.counts.reduce((a, c) => a + c, 0);
-          const d = sevenDigests(b, p, total); if (!d) return null;
+          // 单 substream 且 folder 已有 CRC 的不会再给 digest
+          let nd = 0;
+          for (let i = 0; i < s.folders.length; i++) {
+            const c = s.counts[i] || 1;
+            if (c !== 1 || !s.folders[i].digestDefined) nd += c;
+          }
+          const d = sevenDigests(b, p, nd); if (!d) return null;
           p = d.next;
         } else return null;
       }
@@ -538,7 +545,14 @@
   }
 
   function sevenDecodeFolder(packed, folder, cap) {
-    const lz = folder.coders.find(c => sevenMethod(c.id) === 'lzma2' || sevenMethod(c.id) === 'lzma1');
+    if (folder.coders.some(c => sevenMethod(c.id) === 'bcj2')) {
+      return { error: '7Z 多输入过滤器链暂不支持（BCJ2）' };
+    }
+    const lzCoders = folder.coders.filter(c => sevenMethod(c.id) === 'lzma2' || sevenMethod(c.id) === 'lzma1');
+    if (lzCoders.length !== 1) {
+      return { error: '7Z 多输入过滤器链暂不支持（' + folder.coders.map(c => sevenMethodName(c.id)).join(' + ') + '）' };
+    }
+    const lz = lzCoders[0];
     if (!lz) return { error: '7Z 压缩方法暂不支持（' + folder.coders.map(c => sevenMethodName(c.id)).join(' + ') + '）' };
     const outSize = folder.unpackSizes[lz.outIndex] || 0;
     if (outSize > cap) return { error: `7Z 成员声明解压后 ${outSize} 字节，超过上限` };
@@ -653,6 +667,9 @@
       encoded = true;
       const st = sevenStreams(hdr, 1);
       if (!st) return null;
+      if (st.streams.folders.some(f => f.coders.some(c => sevenMethod(c.id) === 'aes'))) {
+        return { encryptedHeader: true };
+      }
       const dec = sevenDecodeStreams(b, 32, st.streams, cap);
       if (dec.error || !dec.outputs.length) return null;
       hdr = dec.outputs[0];
@@ -691,6 +708,16 @@
     const nextSize = sevenU64(b, 20);
     const CAP = 64 * 1024 * 1024;
     const head = sevenHeader(b, nextOff, nextSize, CAP);
+    if (head && head.encryptedHeader) {
+      findings.push(finding('L1', '7z', '7Z 容器（头部已加密）', {
+        confidence: 0.9, offset: 0,
+        declared: `${b.length} 字节`,
+        actual: 'kEncodedHeader 使用 AES 加密',
+        detail: '连文件表本身都被加密了，没有口令无法列出成员；这不是普通的压缩头。',
+        recipe: '7z l -p<password> <file.7z>'
+      }));
+      return { findings, artifacts, image: null, parsed: { names: null, encoded: true, encryptedHeader: true } };
+    }
     if (!head) {
       const names = (() => {
         const start = 32 + nextOff;
