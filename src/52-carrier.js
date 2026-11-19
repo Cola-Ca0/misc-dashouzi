@@ -899,15 +899,22 @@
     const be32 = o => ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
     const be64 = o => be32(o) * 4294967296 + be32(o + 4);
     const magicBE = be32(0);
-    if (magicBE === 0xCAFEBABE) {
+    if (magicBE === 0xCAFEBABE || magicBE === 0xCAFEBABF) {
+      const fat64 = magicBE === 0xCAFEBABF;
       const nfat = Math.min(be32(4), 64);
+      const entSize = fat64 ? 32 : 20;
       const slices = [];
       for (let i = 0; i < nfat; i++) {
-        const o = 8 + i * 20;
-        if (o + 20 > b.length) break;
-        slices.push({ cputype: be32(o), cpusubtype: be32(o + 4), offset: be32(o + 8), size: be32(o + 12), align: be32(o + 16) });
+        const o = 8 + i * entSize;
+        if (o + entSize > b.length) break;
+        slices.push({
+          cputype: be32(o), cpusubtype: be32(o + 4),
+          offset: fat64 ? be64(o + 8) : be32(o + 8),
+          size: fat64 ? be64(o + 16) : be32(o + 12),
+          align: be32(o + (fat64 ? 24 : 16))
+        });
       }
-      findings.push(finding('L1', 'macho_fat', `Mach-O fat · ${slices.length} 个架构切片`, {
+      findings.push(finding('L1', 'macho_fat', `Mach-O fat${fat64 ? ' (64-bit arch)' : ''} · ${slices.length} 个架构切片`, {
         confidence: 0.95, offset: 0,
         actual: slices.map(s => `cpu 0x${hex(s.cputype)} @0x${hex(s.offset)}+${s.size}`).join(' | '),
         recipe: 'lipo -info / otool -l'
@@ -928,7 +935,9 @@
     const le = thin64le || thin32le;
     const is64 = thin64le || thin64be;
     const r32 = le ? ((o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0) : be32;
-    const r64 = o => r32(o) + r32(o + 4) * 4294967296;
+    const r64 = le
+      ? (o => r32(o) + r32(o + 4) * 4294967296)
+      : (o => r32(o) * 4294967296 + r32(o + 4));   // 大端 64 位是高字在前
     const cputype = r32(4), filetype = r32(12), ncmds = r32(16), sizeofcmds = r32(20);
     let p = is64 ? 32 : 28;
     const cmdsEnd = Math.min(p + sizeofcmds, b.length);
@@ -957,8 +966,11 @@
           const sectname = ascii(b.subarray(so, so + 16), 16).replace(/[.\x00]+$/, '');
           const ssize = is64seg ? r64(so + 40) : r32(so + 36);
           const soff = is64seg ? r32(so + 48) : r32(so + 40);
-          sects.push({ segname, sectname, offset: soff, size: ssize });
-          maxEnd = Math.max(maxEnd, soff + ssize);
+          const sflags = r32(so + (is64seg ? 64 : 56)) & 0xFF;
+          sects.push({ segname, sectname, offset: soff, size: ssize, flags: sflags });
+          // 零填充节（__bss 等）的 offset/size 是虚拟地址空间，不占文件尾。
+          const zerofill = sflags === 0x1 || sflags === 0xC || sflags === 0x12;
+          if (!zerofill) maxEnd = Math.max(maxEnd, soff + ssize);
         }
       } else if (cmd === 0x80000028 && cmdsize >= 24) {
         entry = r64(p + 8);

@@ -1,4 +1,4 @@
-# misc-dashouzi · misc大手子 v1.0.0
+# misc-dashouzi · misc大手子 v1.1.0
 
 **English** · [中文](README.zh-CN.md)
 
@@ -103,7 +103,7 @@ Security boundaries: loopback only, `X-MDZ-Token` on every request, CORS limited
 ```bash
 python build.py            # inline src/ into the single HTML, regenerate fixtures
 python build.py --no-bg    # release build without the wallpaper image
-node tests/run.js          # 467 checks
+node tests/run.js          # 488 checks
 node tests/cdp-smoke.js    # Edge CDP smoke (needs Edge)
 ```
 
@@ -134,6 +134,7 @@ src/80-ui.js        UI, viewer, node editor, self-test
 
 | Version | Date | Highlights |
 |---|---|---|
+| **1.1.0** | 2026-11-19 | Codec toolbox (custom Base alphabets, brute force), PSD/SQLite/Git/FLAC/ISO9660/MP4/Java/PCX/TIFF, XZ/LZMA2 (multi-block, Delta, x86 BCJ, CRC32/64/SHA-256), Mach-O incl. fat_arch_64 |
 | **1.0.0** | 2026-11-10 | First stable release. Feature freeze; wallpaper removed from the build; MIT license |
 | 0.17.0 | 2026-11-10 | Analysis moved into a Web Worker (+ cancel, auto-fallback); batch respects report template |
 | 0.16.0 | 2026-11-10 | Four-lens code review fixes: two infinite loops, large-file scan starvation, memory blowups, PDF ASCII85 bug; `ascii/strings` rewritten (50 MB text: 2.3 s/1.6 GB → 11 ms/0 MB) |

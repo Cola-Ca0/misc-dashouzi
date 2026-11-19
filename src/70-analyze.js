@@ -214,7 +214,7 @@
     // 解出来不是文本而是真文件（base64 的 PNG / hex 的 ZIP…）：切出来当产物，流水线会自动递归
     const binArtifacts = [];
     const binSeen = new Set();
-    const EXT = { PNG: 'png', JPEG: 'jpg', GIF: 'gif', BMP: 'bmp', ICO: 'ico', TIFF: 'tif', WEBP: 'webp', ZIP: 'zip', RAR: 'rar', '7Z': '7z', GZIP: 'gz', TAR: 'tar', PDF: 'pdf', ELF: 'elf', PE: 'exe', SQLITE: 'db', WAV: 'wav', PCAP: 'pcap', PCAPNG: 'pcapng', ISO: 'iso', MP4: 'mp4', PCX: 'pcx', JAVA: 'class', PSD: 'psd', TGA: 'tga', FLAC: 'flac', LNK: 'lnk', OLE: 'doc', GIT: 'pack', BZIP2: 'bz2' };
+    const EXT = { PNG: 'png', JPEG: 'jpg', GIF: 'gif', BMP: 'bmp', ICO: 'ico', TIFF: 'tif', WEBP: 'webp', ZIP: 'zip', RAR: 'rar', '7Z': '7z', GZIP: 'gz', TAR: 'tar', PDF: 'pdf', ELF: 'elf', PE: 'exe', SQLITE: 'db', WAV: 'wav', PCAP: 'pcap', PCAPNG: 'pcapng', ISO: 'iso', MP4: 'mp4', PCX: 'pcx', JAVA: 'class', PSD: 'psd', TGA: 'tga', FLAC: 'flac', LNK: 'lnk', OLE: 'doc', GIT: 'pack', BZIP2: 'bz2', XZ: 'xz', MACHO: 'macho' };
     for (const s of cand) {
       for (const r of MDZ.decodeOnce(s, { binaries: true })) {
         if (!r.binary || binSeen.size >= 4) continue;
@@ -311,7 +311,7 @@
     // 按命中计数会把大文件后半段整段饿死（真实载荷在后面就永远轮不到）。
     // 内嵌容器（zip/png/jpeg）不吃这个预算，预算花光了也继续处理。
     const budget = { tries: 3000, out: 64 * 1024 * 1024, ms: 1200, t0: Date.now() };
-    let skippedBudget = 0;
+    let skippedBudget = 0, tried = 0;
     // 整次分析共用一个「压缩流尝试」的截止时间：每层递归各自计时的话，
     // 十个产物就是十份预算，随机数据能把总耗时放大到十几秒。
     if (!result._streamDeadline) result._streamDeadline = Date.now() + 1500;
@@ -321,6 +321,7 @@
         if (Date.now() > result._streamDeadline) { skippedBudget++; continue; }
         budget.tries--;
       }
+      tried++;
       if (h.kind === 'lzma') {
         const key = item.hash + '@lzma@' + h.offset;
         if (seenOffsets.has(key)) continue;
@@ -410,7 +411,16 @@
           z = inflateStream(h.kind, bytes, h.offset, maxOut);
         }
       }
-      if (!z.out || !z.out.length) continue;   // 校验失败也留明文：CRC 被改/截断的流里往往就是 flag
+      if (!z.out || !z.out.length) {
+        // 内嵌 XZ 解不开时不要静默丢掉：不支持的过滤器 / 截断都是线索。
+        if (!z.out && h.kind === 'xz' && z.error && h.offset > 0) {
+          result.findings.push(finding('L2', 'xz', `内嵌 XZ @0x${h.offset.toString(16)} 解压失败`, {
+            confidence: 0.5, offset: h.offset, actual: z.error,
+            detail: 'XZ 过滤器链目前支持 LZMA2 / Delta / x86 BCJ；其他架构或损坏的流会明确报错。'
+          }));
+        }
+        continue;   // 校验失败也留明文：CRC 被改/截断的流里往往就是 flag
+      }
       budget.out -= z.out.length;
       const head = z.out.subarray(0, Math.min(4096, z.out.length));
       const pr = MDZ.printableRatio(head);
@@ -444,7 +454,7 @@
     if (skippedBudget) {
       result.findings.push(finding('L2', 'scan_budget', `跳过 ${skippedBudget} 个压缩流签名（预算/时限）`, {
         confidence: 0.6,
-        actual: `命中 ${hits.length} 个，只尝试了 ${Math.max(0, hits.length - skippedBudget)} 个`,
+        actual: `命中 ${hits.length} 个，实际尝试 ${tried} 个`,
         detail: '压缩流尝试有 3000 次 / 64MB / 1.5s 的上限，防止随机数据把分析拖死。大文件后段或高噪声文件可能还有没试的流；把可疑段切出来单独分析。',
         recipe: 'binwalk 看签名列表，或按偏移切出后单独拖入'
       }));

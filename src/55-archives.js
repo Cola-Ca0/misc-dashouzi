@@ -700,20 +700,32 @@
     const b = toU8(input);
     const findings = [], artifacts = [];
     const z = MDZ.xzDecompress(b, { maxOut: 128 * 1024 * 1024 });
-    if (!z.out || !z.out.length) {
+    const out = z.out || new Uint8Array(0);
+    if (z.error && !out.length) {
       findings.push(finding('L0', 'xz', 'XZ 解压失败', {
         confidence: 0.9, detail: z.error || '没有产出'
       }));
       return { findings, artifacts, image: null, parsed: z };
     }
-    findings.push(finding('L1', 'xz', `XZ 解压（${z.blocks} 块，${z.out.length} 字节）`, {
-      confidence: 0.85,
-      declared: `check 类型 ${z.checkType}`,
-      actual: `${z.out.length} 字节`,
-      detail: (z.warnings || []).join('；') || '块校验通过；过滤器链支持 LZMA2 / Delta。',
-      preview: ascii(z.out, 120)
+    const checkName = { 0: '无', 1: 'CRC32', 4: 'CRC64', 10: 'SHA-256' }[z.checkType] || ('#' + z.checkType);
+    const warnings = z.warnings || [];
+    findings.push(finding('L1', 'xz', `XZ 解压（${z.blocks} 块，${out.length} 字节）`, {
+      confidence: z.error ? 0.7 : 0.85,
+      declared: `check ${checkName}`,
+      actual: `${out.length} 字节${z.error ? ' · 部分' : ''}`,
+      detail: z.error ? z.error : (warnings.length ? warnings.join('；')
+        : (z.verifiedChecks ? `${checkName} 块校验通过` : '流未设置块校验')),
+      preview: ascii(out, 120)
     }));
-    artifacts.push(artifact('xz-out.bin', z.out, 'XZ 解压产物' + (z.error ? ' · 部分' : '')));
+    if (out.length) artifacts.push(artifact('xz-out.bin', out, 'XZ 解压产物' + (z.error ? ' · 部分' : '')));
+    if (z.tail && z.tail.length) {
+      findings.push(finding('L2', 'xz_tail', `XZ 流之后还有 ${z.tail.length} 字节`, {
+        confidence: 0.85, offset: b.length - z.tail.length,
+        preview: ascii(z.tail, 120),
+        detail: '合法 XZ 流在 footer 结束后就应结束，后面的数据不会被解压；CTF 常把 flag 挂在这里。'
+      }));
+      artifacts.push(artifact('xz-tail.bin', z.tail, 'XZ 尾部附加数据'));
+    }
     return { findings, artifacts, image: null, parsed: z };
   }
 

@@ -283,7 +283,7 @@
         consumed = p - start;
         continue;
       }
-      const p0 = p++;
+      p++;   // 控制字节
       if (p + 4 > b.length) { error = 'LZMA2 压缩块头截断'; break; }
       const reset = (control >> 5) & 3;
       const unpacked = (((control & 0x1F) << 16) | (b[p] << 8) | b[p + 1]) + 1;
@@ -309,14 +309,38 @@
       if (r.error) { error = r.error; break; }
       if (r.produced !== unpacked) { error = 'LZMA2 未解满 ' + unpacked + ' 字节'; break; }
       consumed = p - start;
-      void p0;
     }
     return { out: out.subarray(0, host.outLen), consumed, error, outputLen: host.outLen };
   }
 
   // ---------- XZ ----------
-  function be32(b, o) { return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0; }
   function le32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
+
+  // CRC-64/XZ（反射多项式 0xC96C5795D7870F42）。JS 没有 64 位整数运算，
+  // 拆成高低 32 位两张表；init/xorout 都是全 F。
+  const CRC64 = (() => {
+    const hi = new Uint32Array(256), lo = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let h = 0, l = i;
+      for (let k = 0; k < 8; k++) {
+        const bit = l & 1;
+        l = ((l >>> 1) | (h << 31)) >>> 0;
+        h = h >>> 1;
+        if (bit) { l = (l ^ 0xD7870F42) >>> 0; h = (h ^ 0xC96C5795) >>> 0; }
+      }
+      hi[i] = h; lo[i] = l;
+    }
+    return { hi, lo };
+  })();
+  function crc64(bytes) {
+    let h = 0xFFFFFFFF, l = 0xFFFFFFFF;
+    for (let i = 0; i < bytes.length; i++) {
+      const idx = (l ^ bytes[i]) & 0xFF;
+      l = (((l >>> 8) | (h << 24)) ^ CRC64.lo[idx]) >>> 0;
+      h = ((h >>> 8) ^ CRC64.hi[idx]) >>> 0;
+    }
+    return { hi: (h ^ 0xFFFFFFFF) >>> 0, lo: (l ^ 0xFFFFFFFF) >>> 0 };
+  }
 
   function xzVli(b, p) {
     let v = 0, shift = 0, c;
@@ -386,11 +410,13 @@
     const maxOut = o.maxOut || 64 * 1024 * 1024;
     const warnings = [];
     const chunks = [];
-    let p = 0, blocks = 0, total = 0, error = null, streams = 0, lastCheck = -1;
+    let p = 0, blocks = 0, total = 0, error = null, streams = 0, lastCheck = -1, verifiedChecks = 0, tail = null;
     while (p + 12 <= b.length && !error) {
       if (!(b[p] === 0xFD && b[p + 1] === 0x37 && b[p + 2] === 0x7A && b[p + 3] === 0x58 && b[p + 4] === 0x5A && b[p + 5] === 0x00)) {
         // 连接流之间的 padding 必须是 4 字节的零
         if (b[p] === 0 && b[p + 1] === 0 && b[p + 2] === 0 && b[p + 3] === 0) { p += 4; continue; }
+        // 已经完整读过至少一个流：后面不是下一个流也不是 padding，就是尾部附加数据。
+        if (streams > 0) { tail = b.subarray(p); break; }
         error = 'XZ 流头魔数不符';
         break;
       }
@@ -414,7 +440,9 @@
         if (flags & 0x40) { const v = xzVli(b, q); compSize = v.value; q = v.next; }
         if (flags & 0x80) { const v = xzVli(b, q); uncompSize = v.value; q = v.next; }
         const nFilters = (flags & 0x03) + 1;
-        let dictProp = -1, deltaDist = 0, bcjX86 = false, unsupported = '';
+        // 头部顺序 = 编码顺序（最后一项一定是 LZMA2）；解码要倒着走。
+        let dictProp = -1, unsupported = '';
+        const filters = [];
         for (let i = 0; i < nFilters; i++) {
           const id = xzVli(b, q); q = id.next;
           const ps = xzVli(b, q); q = ps.next;
@@ -423,11 +451,12 @@
             if (ps.value !== 1) unsupported = 'LZMA2 属性长度异常';
             else dictProp = b[q];
           } else if (id.value === 0x03) {
-            deltaDist = (b[q] | 0) + 1;
+            if (ps.value !== 1) unsupported = 'Delta 属性长度异常';
+            else filters.push({ delta: b[q] + 1 });   // 属性 = 距离 - 1，合法 1..256
           } else if (id.value === 0x04 && ps.value === 0) {
-            bcjX86 = true;
+            filters.push({ bcj: true });
           } else {
-            unsupported = 'XZ 过滤器 0x' + id.value.toString(16) + ' 暂不支持（BCJ 等）';
+            unsupported = 'XZ 过滤器 0x' + id.value.toString(16) + ' 暂不支持（仅 x86 BCJ / Delta）';
           }
           q += ps.value;
         }
@@ -437,15 +466,30 @@
         const lz = lzma2Decompress(b, dataStart, maxOut - total);
         if (!lz.out || lz.error) { error = lz.error || 'LZMA2 解压失败'; break; }
         const data = lz.out;
-        if (bcjX86) bcjX86Decode(data);
-        if (deltaDist > 1) {
-          for (let i = deltaDist; i < data.length; i++) data[i] = (data[i] + data[i - deltaDist]) & 255;
+        // 反向应用过滤器：头部 [x86, delta, lzma2] 解码顺序是 lzma2 → delta → x86。
+        for (let fi = filters.length - 1; fi >= 0; fi--) {
+          const f = filters[fi];
+          if (f.bcj) bcjX86Decode(data);
+          else if (f.delta) {
+            const d = f.delta;
+            for (let i = d; i < data.length; i++) data[i] = (data[i] + data[i - d]) & 255;
+          }
         }
         p = dataStart + lz.consumed;
         const pad = (4 - ((p - dataStart) % 4)) % 4;
         p += pad;
         if (p + checkSize > b.length) { error = 'XZ 块校验字段越界'; break; }
-        if (checkType === 1 && MDZ.crc32 && (MDZ.crc32(data) >>> 0) !== le32(b, p)) warnings.push('块数据 CRC32 不匹配');
+        if (checkType === 1 && MDZ.crc32) {
+          verifiedChecks++;
+          if ((MDZ.crc32(data) >>> 0) !== le32(b, p)) warnings.push('块数据 CRC32 不匹配');
+        } else if (checkType === 4) {
+          verifiedChecks++;
+          const c = crc64(data);
+          if (c.lo !== le32(b, p) || c.hi !== le32(b, p + 4)) warnings.push('块数据 CRC64 不匹配');
+        } else if (checkType === 10 && MDZ.sha256) {
+          verifiedChecks++;
+          if (MDZ.sha256(data) !== MDZ.bytesToHex(b.subarray(p, p + 32))) warnings.push('块数据 SHA-256 不匹配');
+        }
         p += checkSize;
         if (compSize >= 0 && compSize !== lz.consumed) warnings.push('压缩大小字段不一致');
         if (uncompSize >= 0 && uncompSize !== data.length) warnings.push('解压大小字段不一致');
@@ -477,7 +521,11 @@
     const out = new Uint8Array(total);
     let at = 0;
     for (const c of chunks) { out.set(c, at); at += c.length; }
-    return { out, error, warnings, blocks, checkType: lastCheck, streams };
+    if (!error && !tail && p < b.length) {
+      const rest = b.subarray(p);
+      if (rest.some(x => x !== 0)) tail = rest;
+    }
+    return { out, error, warnings, blocks, checkType: lastCheck, streams, verifiedChecks, tail };
   }
 
   Object.assign(MDZ, { lzmaDecompressAlone, lzma2Decompress, xzDecompress });

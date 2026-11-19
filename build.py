@@ -886,9 +886,50 @@ def fixture_macho():
     return body + b"flag{macho_tail}"
 
 
+def fixture_macho_bss():
+    flag = b"flag{macho_bss}"
+    text_seg = struct.pack("<II16sQQQQiiII", 0x19, 72 + 80, b"__TEXT", 0x100000000, 0x1000, 0, 0x400, 7, 5, 1, 0)
+    text_sect = struct.pack("<16s16sQQIIIIIIII", b"__text", b"__TEXT", 0x100000300, len(flag), 0x300, 4, 0, 0, 0x80000400, 0, 0, 0)
+    data_seg = struct.pack("<II16sQQQQiiII", 0x19, 72 + 80, b"__DATA", 0x100001000, 0x100000, 0x400, 0, 3, 3, 1, 0)
+    bss_sect = struct.pack("<16s16sQQIIIIIIII", b"__bss", b"__DATA", 0x100001000, 0x80000, 0, 4, 0, 0, 0x1, 0, 0, 0)
+    main = struct.pack("<IIQQ", 0x80000028, 24, 0x300, 0)
+    sizeofcmds = len(text_seg) + len(text_sect) + len(data_seg) + len(bss_sect) + len(main)
+    hdr = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x01000007, 3, 2, 4, sizeofcmds, 0, 0)
+    body = hdr + text_seg + text_sect + data_seg + bss_sect + main
+    body += bytes(0x300 - len(body)) + flag
+    body += bytes(0x400 - len(body))
+    return body + b"flag{macho_bss_tail}"
+
+
+def fixture_macho_be64():
+    flag = b"flag{macho_be64}"
+    seg = struct.pack(">II16sQQQQiiII", 0x19, 72 + 80, b"__TEXT", 0x100000000, 0x1000, 0, 0x400, 7, 5, 1, 0)
+    sect = struct.pack(">16s16sQQIIIIIIII", b"__text", b"__TEXT", 0x100000200, len(flag), 0x200, 4, 0, 0, 0x80000400, 0, 0, 0)
+    main = struct.pack(">IIQQ", 0x80000028, 24, 0x200, 0)
+    sizeofcmds = len(seg) + len(sect) + len(main)
+    hdr = struct.pack(">IiiIIIII", 0xFEEDFACF, 0x01000012, 3, 2, 2, sizeofcmds, 0, 0)
+    body = hdr + seg + sect + main
+    body += bytes(0x200 - len(body)) + flag
+    body += bytes(0x400 - len(body))
+    return body + b"flag{macho_be64_tail}"
+
+
+def fixture_macho_fat64():
+    inner = fixture_macho()
+    off = 0x100
+    hdr = struct.pack(">II", 0xCAFEBABF, 1)
+    arch = struct.pack(">iiQQII", 0x01000007, 3, off, len(inner), 0, 0)
+    return hdr + arch + bytes(off - len(hdr) - len(arch)) + inner
+
+
 def fixture_xz_text():
     data = b"flag{xz_stream} " * 50
     return lzma.compress(data, format=lzma.FORMAT_XZ)
+
+
+def fixture_xz_tail():
+    data = b"flag{xz_body} " * 20
+    return lzma.compress(data, format=lzma.FORMAT_XZ) + b"flag{xz_tail}"
 
 
 def fixture_xz_crc32():
@@ -924,6 +965,33 @@ def fixture_xz_bcj_raw():
 def fixture_xz_bcj_bin():
     filters = [{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2, "preset": 6}]
     return lzma.compress(_bcj_sample(), format=lzma.FORMAT_XZ, filters=filters)
+
+
+def fixture_xz_delta1():
+    data = b"flag{xz_delta_one} " * 40
+    filters = [{"id": lzma.FILTER_DELTA, "dist": 1}, {"id": lzma.FILTER_LZMA2, "preset": 6}]
+    return lzma.compress(data, format=lzma.FORMAT_XZ, filters=filters)
+
+
+def fixture_xz_chain():
+    data = _bcj_sample() + b"flag{xz_chain}"
+    filters = [{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_DELTA, "dist": 4}, {"id": lzma.FILTER_LZMA2, "preset": 6}]
+    return lzma.compress(data, format=lzma.FORMAT_XZ, filters=filters)
+
+
+def fixture_xz_sha256():
+    data = b"flag{xz_sha256} " * 40
+    return lzma.compress(data, format=lzma.FORMAT_XZ, check=lzma.CHECK_SHA256)
+
+
+def fixture_xz_empty():
+    return lzma.compress(b"", format=lzma.FORMAT_XZ)
+
+
+def fixture_xz_arm_wrapped():
+    data = b"flag{xz_arm_unsupported} " * 20
+    filters = [{"id": lzma.FILTER_ARM}, {"id": lzma.FILTER_LZMA2, "preset": 6}]
+    return bytes(64) + lzma.compress(data, format=lzma.FORMAT_XZ, filters=filters)
 
 
 def fixture_pdf_lzw():
@@ -1836,6 +1904,7 @@ FIXTURES = [
     ("packbits.tif", fixture_tiff_packbits, ["TIFF", "PackBits"]),
     ("lzw.pdf", fixture_pdf_lzw, ["PDF 内嵌文件", "flag{pdf_lzw_stream}"]),
     ("text.xz", fixture_xz_text, ["XZ 解压", "flag{xz_stream}"]),
+    ("tail.xz", fixture_xz_tail, ["XZ 解压", "flag{xz_body}", "XZ 流之后还有"]),
     ("hello.macho", fixture_macho, ["Mach-O", "flag{macho_section}", "flag{macho_tail}", "__text"]),
     ("multi.xz", fixture_xz_multiblock, ["XZ 解压", "flag{xz_block_two}"]),
     ("concat.xz", fixture_xz_concat, ["XZ 解压", "flag{xz_first}", "flag{xz_second}"]),
@@ -1844,6 +1913,14 @@ FIXTURES = [
     ("bcj.xz", fixture_xz_bcj, ["XZ 解压", "flag{xz_bcj_unsupported}"]),
     ("bcj_raw.bin", fixture_xz_bcj_raw, []),
     ("bcj_bin.xz", fixture_xz_bcj_bin, ["XZ 解压"]),
+    ("delta1.xz", fixture_xz_delta1, ["XZ 解压", "flag{xz_delta_one}"]),
+    ("chain.xz", fixture_xz_chain, ["XZ 解压", "flag{xz_chain}"]),
+    ("sha.xz", fixture_xz_sha256, ["XZ 解压", "flag{xz_sha256}"]),
+    ("empty.xz", fixture_xz_empty, []),
+    ("arm_wrapped.bin", fixture_xz_arm_wrapped, ["内嵌 XZ"]),
+    ("bss.macho", fixture_macho_bss, ["Mach-O", "flag{macho_bss_tail}", "__bss"]),
+    ("be64.macho", fixture_macho_be64, ["Mach-O", "flag{macho_be64_tail}", "__text"]),
+    ("fat64.macho", fixture_macho_fat64, ["Mach-O fat"]),
     ("deflate.tif", fixture_tiff_deflate, ["TIFF", "Deflate"]),
     ("gray16.tif", fixture_tiff_gray16, ["TIFF", "16 位"]),
     ("palette.tif", fixture_tiff_palette, ["TIFF", "像素"]),

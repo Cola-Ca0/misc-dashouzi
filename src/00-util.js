@@ -5,7 +5,7 @@
   'use strict';
   const MDZ = root.MDZ = root.MDZ || {};
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
 
   // ---------- 字节 ----------
   function toU8(x) {
@@ -248,6 +248,7 @@
     { name: 'MACHO', mime: 'application/x-mach-binary', sig: [0xfe, 0xed, 0xfa, 0xcf] },
     { name: 'MACHO', mime: 'application/x-mach-binary', sig: [0xce, 0xfa, 0xed, 0xfe] },
     { name: 'MACHO', mime: 'application/x-mach-binary', sig: [0xcf, 0xfa, 0xed, 0xfe] },
+    { name: 'MACHO', mime: 'application/x-mach-binary', sig: [0xca, 0xfe, 0xba, 0xbf] },
     { name: 'PCX', mime: 'image/x-pcx', sig: [0x0a, 0x05, 0x01] }
   ];
 

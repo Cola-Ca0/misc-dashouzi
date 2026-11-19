@@ -1308,6 +1308,24 @@ console.log('\n== Mach-O ==');
     && r.findings.some(f => f.type === 'macho_trailer'), JSON.stringify(r.findings.map(f => f.type)));
   const an = M.analyze(mo, 'hello.macho', {});
   check('Mach-O 进入分析链', M.flags(an).indexOf('flag{macho_section}') >= 0 && M.flags(an).indexOf('flag{macho_tail}') >= 0, M.flags(an).join(' '));
+  const bss = fs.readFileSync(path.join(__dirname, 'fixtures', 'bss.macho'));
+  const rb = M.auditMachO(bss, 'bss.macho');
+  const bsec = rb.parsed && rb.parsed.sects.find(s => s.sectname === '__bss');
+  check('Mach-O 零填充节不算文件尾', !!bsec && bsec.flags === 1
+    && rb.findings.some(f => f.type === 'macho_trailer' && f.offset === 0x400),
+    JSON.stringify({ bss: bsec, tail: rb.findings.filter(f => f.type === 'macho_trailer') }));
+  const be = fs.readFileSync(path.join(__dirname, 'fixtures', 'be64.macho'));
+  const rbe = M.auditMachO(be, 'be64.macho');
+  check('Mach-O 大端 64 位字段', !!rbe.parsed && rbe.parsed.is64 && rbe.parsed.segs[0].filesize === 0x400
+    && rbe.parsed.entry === 0x200 && rbe.parsed.sects[0].size === Buffer.byteLength('flag{macho_be64}')
+    && rbe.findings.some(f => f.type === 'macho_trailer' && f.offset === 0x400),
+    JSON.stringify(rbe.parsed && { s: rbe.parsed.segs, e: rbe.parsed.entry, sec: rbe.parsed.sects }));
+  const fat = fs.readFileSync(path.join(__dirname, 'fixtures', 'fat64.macho'));
+  const rf = M.auditMachO(fat, 'fat64.macho');
+  check('Mach-O fat_arch_64 切片', M.detectType(fat, 'x').format === 'MACHO' && !!rf.parsed && rf.parsed.fat
+    && rf.parsed.fat.length === 1 && rf.parsed.fat[0].offset === 0x100
+    && rf.artifacts.some(a => /^macho-slice-/.test(a.name)),
+    JSON.stringify(rf.parsed && rf.parsed.fat));
 }
 console.log('\n== XZ / LZMA2 ==');
 {
@@ -1342,6 +1360,36 @@ console.log('\n== XZ / LZMA2 ==');
   const cs = Buffer.from(concat.out || []).toString('latin1');
   check('XZ 连接流与 padding', !concat.error && concat.streams === 2 && cs.indexOf('flag{xz_first}') >= 0 && cs.indexOf('flag{xz_second}') >= 0,
     concat.error || ('streams ' + concat.streams));
+  const d1 = M.xzDecompress(rd('delta1.xz'));
+  check('XZ Delta 距离 1', !d1.error && Buffer.from(d1.out || []).toString('latin1').indexOf('flag{xz_delta_one}') === 0,
+    d1.error || ('len ' + (d1.out && d1.out.length)));
+  const chain = M.xzDecompress(rd('chain.xz'));
+  const chainWant = Buffer.concat([raw, Buffer.from('flag{xz_chain}')]);
+  check('XZ 过滤器链按逆序解码（x86 + Delta）', !chain.error && Buffer.from(chain.out || []).equals(chainWant),
+    chain.error || ('len ' + (chain.out && chain.out.length) + '/' + chainWant.length));
+  check('XZ CRC64 校验通过', z.checkType === 4 && z.verifiedChecks === 1 && !(z.warnings || []).length,
+    JSON.stringify({ c: z.checkType, v: z.verifiedChecks, w: z.warnings }));
+  const sh = M.xzDecompress(rd('sha.xz'));
+  check('XZ SHA-256 校验通过', !sh.error && sh.checkType === 10 && sh.verifiedChecks === 1 && !(sh.warnings || []).length,
+    JSON.stringify({ c: sh.checkType, v: sh.verifiedChecks, w: sh.warnings }));
+  const bad = Buffer.from(x);
+  const footer = bad.length - 12;
+  const idxSize = (bad.readUInt32LE(footer + 4) + 1) * 4;
+  bad[footer - idxSize - 8] ^= 0x01;   // 只改 CRC64 字段，数据本身仍可解码
+  const bz = M.xzDecompress(bad);
+  check('XZ CRC64 不匹配会告警', (bz.warnings || []).some(w => /CRC64/.test(w)), JSON.stringify({ e: bz.error, w: bz.warnings }));
+  const trunc = M.xzDecompress(x.subarray(0, x.length - 20));
+  check('XZ 截断的 index/footer 会报错', !!trunc.error, trunc.error || '无错误');
+  const em = M.auditXZ(rd('empty.xz'), 'empty.xz');
+  check('XZ 空流合法', !em.parsed.error && em.parsed.out.length === 0, JSON.stringify({ e: em.parsed.error, n: em.parsed.out.length }));
+  const armAn = M.analyze(rd('arm_wrapped.bin'), 'arm_wrapped.bin', {});
+  check('内嵌 XZ 不支持的过滤器会报告', armAn.findings.some(f => f.type === 'xz'), JSON.stringify(armAn.findings.map(f => f.type)));
+  const tailZ = M.xzDecompress(rd('tail.xz'));
+  const tailR = M.auditXZ(rd('tail.xz'), 'tail.xz');
+  check('XZ 尾部附加数据被切出', !tailZ.error && !!tailZ.tail
+    && Buffer.from(tailZ.tail).toString('latin1') === 'flag{xz_tail}'
+    && tailR.findings.some(f => f.type === 'xz_tail')
+    && tailR.artifacts.some(a => a.name === 'xz-tail.bin'), JSON.stringify({ e: tailZ.error, t: tailZ.tail && Buffer.from(tailZ.tail).toString() }));
 }
 console.log('\n== PDF LZW ==');
 {

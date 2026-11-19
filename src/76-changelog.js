@@ -26,12 +26,12 @@
       group: '压缩与容器',
       items: [
         'zlib / gzip / LZMA / XZ 解压，扫到就自动解压并递归分析',
-        'XZ：LZMA2 块（含未压缩块/状态与字典重置）、多块流、连接流与 stream padding、Delta 过滤、x86 BCJ、CRC32/CRC64 校验；ARM 等其它 BCJ 明确报暂不支持',
+        'XZ：LZMA2 块（含未压缩块/状态与字典重置）、多块流、连接流与 stream padding、Delta 过滤（含距离 1）、x86 BCJ、过滤器链逆序解码、CRC32/CRC64/SHA-256 校验、尾部附加数据；ARM 等其它 BCJ 明确报暂不支持',
         'ZIP 条目遍历（stored / deflate）、注释、尾挂',
         '字体 sfnt 表、SQLite 页结构、ELF/PE 节表与 overlay',
         'SQLite 行级扫描：B 树叶页按记录格式解文本列，UTF-8/UTF-16 都读，溢出页也跟，结果导出 sqlite-rows.txt',
         'Git：松散对象（zlib + "<type> <size>\\0"）与 packfile（含 OFS_DELTA 增量还原），提交/blob 里的 flag 直接点名',
-        'Mach-O：32/64 位与 fat 切片、段/节表、入口点、代码签名、尾部 overlay',
+        'Mach-O：32/64 位（大小端）与 fat/fat_arch_64 切片、段/节表、入口点、代码签名、尾部 overlay；零填充节不算文件尾',
         'ISO9660：卷描述符、目录树、文件提取、卷空间后附加；Joliet UTF-16 文件名',
         'MP4/MOV：box 树、ftyp/mvhd、ilst 元数据、free/skip 非零填充、mdat 与尾部附加',
         'PDF LZWDecode（复用 TIFF LZW）与 Flate/ASCII85 过滤器链',
@@ -64,14 +64,26 @@
     }
   ];
 
-  // 未发布新增
-  // - 编码工具页：CyberChef 式双向编码/解码 + 自定义 Base 字母表 + 编码爆破（纯 JS，不依赖 companion）。
-  // - 新格式：bzip2 / TGA / DTMF / LNK / OLE2 复合文档。
-  // 未发布修复
-  // - 修复 v1.0.0 遗留缺陷：批量导出速报或 WP 框架时抛出 TypeError。
-  // - 产物按内容识别出真实格式时，除原名外再给一个「另存 .zip / .png / …」的下载名。
-  // - 文本摩斯解码与音频摩斯解码同名互相覆盖：音频侧改名为 morseDecodePCM。
   const CHANGELOG = [
+    {
+      version: '1.1.0', date: '2026-11-19', title: '编码工具箱与格式大扩展',
+      added: [
+        '「编码工具」独立页：Base64/32/58/62/85/91、Hex、二/八/十进制、URL/HTML/QP/Unicode/UU、ROT13/47、Atbash、摩斯、培根、A1Z26，双向转换；自定义 Base 字母表；编码爆破（全部解码器 + ROT + 常见换表 + 多层链，按可读性/flag 排序）',
+        '分析时发现常见编码会同时显示原文与自动解码结果，可直接转到编码页继续',
+        '新格式：PSD（图层/隐藏层预览/合成图）、SQLite 行扫描、Git 松散对象与 packfile（OFS/REF delta）、FLAC 元数据、ISO9660、MP4/MOV、Java class、PCX、TIFF（PackBits/LZW/Deflate/predictor）、bzip2/TGA/LNK/OLE/DTMF',
+        'XZ/LZMA2 解压：多块、连接流、Delta、x86 BCJ、CRC32/CRC64/SHA-256 校验与尾部附加数据',
+        'Mach-O：大小端 32/64 位、fat 与 fat_arch_64、段/节、入口、代码签名与 overlay',
+        'Unicode Tag / 变体选择符 / 零宽字符隐写检测',
+        'PDF LZWDecode（复用 TIFF LZW）'
+      ],
+      fixed: [
+        'XZ Delta 距离 1 被当成无过滤；过滤器链按反序应用（x86+Delta）',
+        'XZ CRC64/SHA-256 只认不验；缺失 index/footer 的截断流不再静默成功；空流不再报失败',
+        '内嵌 XZ 遇到不支持的过滤器会明确报告，不再静默丢弃',
+        'Mach-O 大端 64 位字段按低字在前读错；零填充节（__bss）不再压掉尾部 overlay 检测',
+        '扫描预算提示里的「实际尝试」计数不再把内嵌容器算漏'
+      ]
+    },
     {
       version: '1.0.0', date: '2026-11-10', title: '首个正式版',
       added: [
